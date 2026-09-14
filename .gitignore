@@ -1,0 +1,15 @@
+structure_of_proj.md
+Test/
+reference/
+
+__pycache__/
+*.py[cod]
+.asp_env/
+
+*_ui.py
+*_rc.py
+
+data/
+.pytest_cache/
+.idea/
+.vscode/

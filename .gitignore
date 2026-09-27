@@ -1,6 +1,7 @@
 structure_of_proj.md
 Test/
 reference/
+docs/
 
 __pycache__/
 *.py[cod]

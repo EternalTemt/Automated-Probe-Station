@@ -3,3 +3,6 @@
 
 Необходимые библиотеки
 1) PySide6
+2) pyvisa
+3) pyserial
+4) pyqtgraph

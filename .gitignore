@@ -11,6 +11,7 @@ __pycache__/
 *_rc.py
 
 data/
+demo/data/
 .pytest_cache/
 .idea/
 .vscode/

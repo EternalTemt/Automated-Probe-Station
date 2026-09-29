@@ -1,0 +1,8 @@
+# Зависимости проекта Automated Probe Station.
+# Версии зафиксированы теми, что фактически стоят в .asp_env/ и на которых
+# прошла headless-проверка demo/smoke_check.py — не поднимать без прогона теста.
+PySide6==6.11.2
+PyVISA==1.16.2
+pyserial==3.5
+pyqtgraph==0.14.0
+numpy==2.5.3

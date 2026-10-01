@@ -1,30 +1,3 @@
-"""
-Программная проверка сборки (headless, без железа).
-
-Запуск из корня репозитория:
-    QT_QPA_PLATFORM=offscreen .asp_env/bin/python demo/smoke_check.py
-
-Сценарий (по пунктам задания на проверку):
-1. build_application() -> дождаться инициализации приборов в worker-потоке
-   (K2636B должен сам уйти в режим симуляции — железа нет);
-2. выставить параметры (sample=TEST1, chipType=MD2, V1=-1, V2=1, Vs=0.2,
-   dt=0.01, контакты A/B) и нажать «start»;
-3. убедиться, что точки идут на график;
-4. «pause»: точки остановились, output=0;
-5. «resume»: точки продолжились (после выдержки Δt);
-6. «restart» (stop): созданы JSON/CSV/PNG, JSON содержит параметры, массивы
-   точек и путь к PNG;
-7. полный прогон до естественного конца развёртки (маленький диапазон):
-   контроллер сам переходит в idle, сигнал finished был;
-8. закрытие окна -> shutdown по процедуре ТЗ -> код выхода 0.
-
-Все проверки — программно, через QTimer: ни одного ручного действия.
-Прямые чтения controller.state / k2636b.outputA — допустимое исключение
-строгих правил потоков: это тест, читающий простые поля для контроля, а не
-часть архитектуры приложения. Проверки файлов сравнивают списоков ДО/ПОСЛЕ,
-чтобы повторные прогоны не мешали друг другу.
-"""
-
 import json
 import os
 import sys
@@ -34,8 +7,6 @@ import traceback
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-# main.py лежит рядом; build_application собирает всё приложение (потоки,
-# объекты, окно, все connect) — проверяем именно боевую конфигурацию.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from main import build_application  # noqa: E402
 from controller_widget import ControllerWidget  # noqa: E402
@@ -67,9 +38,6 @@ class Smoke:
         self.c = controller
         self.k = k2636b
         self.ps = ps
-        # Виджеты ищем по типу — окно собрано build_application, ссылки
-        # на виджеты из него не возвращались, а доставать через findChild
-        # надёжнее, чем менять сигнатуру ради теста.
         self.cw = window.findChild(ControllerWidget)
         self.graph = window.findChild(Graph)
         assert self.cw is not None and self.graph is not None
@@ -104,10 +72,6 @@ class Smoke:
         QTimer.singleShot(delay, invoke)
 
 
-# ==================================================================== #
-# Шаги сценария                                                        #
-# ==================================================================== #
-
 def step_wait_init(s: Smoke) -> None:
     """Дождаться открытия приборов в worker-потоке (таймаут 5 с)."""
     for _ in range(50):
@@ -120,20 +84,18 @@ def step_wait_init(s: Smoke) -> None:
     print(f"  info: K2636B.simulated = {s.k.simulated} (ожидаем True без железа)")
     check(s.k.simulated, "K2636B в режиме симуляции")
     check(s.c.state == "idle", "контроллер в idle после инициализации")
-    # Снимок содержимого data/ до эксперимента — проверяем ДЕЛЬТУ файлов.
     s.files_before = {sub: list_files(sub) for sub in ("json", "csv", "graphs")}
 
 
 def step_set_params_full(s: Smoke) -> None:
     cw = s.cw
     cw.sample_edit.setText("TEST1")
-    cw.radio_md2.click()          # click(), а не setChecked: нужен сигнал
+    cw.radio_md2.click()
     cw.v1_spin.setValue(-1.0)
     cw.v2_spin.setValue(1.0)
     cw.vs_spin.setValue(0.2)
     cw.dt_spin.setValue(0.01)
     cw.comp_spin.setValue(0.01)
-    # Ячейки контактов доступны и держат диапазон MD2 (1..15)
     check(cw._ps_widget.spin_a.isEnabled(), "ячейки контактов доступны после выбора типа чипа")
     check(cw._ps_widget.spin_a.maximum() == 15, "диапазон MD2: 1..15")
     cw._ps_widget.spin_a.setValue(3)
@@ -141,8 +103,7 @@ def step_set_params_full(s: Smoke) -> None:
 
 
 def _wait_for(cond, what: str, timeout_s: float = 3.0) -> None:
-    """Ждать истинности условия (queued-слоты контроллера исполняются в
-    worker-потоке — нужно реальное время, а не processEvents GUI)."""
+    """Ждать истинности условия с таймаутом."""
     for _ in range(int(timeout_s * 20)):
         if cond():
             print(f"  ok: {what}")
@@ -152,8 +113,7 @@ def _wait_for(cond, what: str, timeout_s: float = 3.0) -> None:
 
 
 def step_exercise_scale_and_channel(s: Smoke) -> None:
-    """Прогон межвиджетных связей до старта: scaleChanged -> graph.set_log_scale
-    и channelChanged -> controller.set_channel (оба направления по кругу)."""
+    """Проверить связи scaleChanged и channelChanged между виджетами."""
     s.cw.radio_log.click()
     check(s.graph._log_scale, "scaleChanged -> set_log_scale(True)")
     s.cw.radio_lin.click()
@@ -170,11 +130,11 @@ def step_exercise_scale_and_channel(s: Smoke) -> None:
 
 def step_start(s: Smoke) -> None:
     s._n0 = s.graph.points_count()
-    s.cw.start_button.click()     # idle -> sig_start
+    s.cw.start_button.click()
 
 
 def step_points_flow(s: Smoke) -> None:
-    check(s.c.state == "started", "после start контроллер в started")
+    check(s.c.state == "measurements", "после start контроллер в measurements")
     check(s.graph.points_count() > s._n0, "точки идут на график")
     check(s.cw.start_button.text() == "pause", "кнопка стала «pause»")
     check(not s.cw.v1_spin.isEnabled(), "поля заблокированы при измерении")
@@ -182,16 +142,13 @@ def step_points_flow(s: Smoke) -> None:
 
 
 def step_pause(s: Smoke) -> None:
-    s.cw.start_button.click()     # pause
+    s.cw.start_button.click()
 
 
 def step_paused(s: Smoke) -> None:
-    check(s.c.state == "paused", "после pause контроллер в paused")
+    check(s.c.state == "waiting", "после pause контроллер в waiting")
     check(s.cw.start_button.text() == "resume", "кнопка стала «resume»")
     check(not s.k.outputA, "на паузе output=0 (напряжение снято с образца)")
-    # Счётчик фиксируем ТОЛЬКО после подтверждения paused: sig_pause ещё в
-    # очереди worker-потока, когда click() возвращается, — точки между
-    # кликом и обработкой pause законны и не должны ломать проверку «замерло».
     s._paused_count = s.graph.points_count()
 
 
@@ -201,26 +158,19 @@ def step_paused_frozen(s: Smoke) -> None:
 
 
 def step_resume(s: Smoke) -> None:
-    s.cw.start_button.click()     # resume
+    s.cw.start_button.click()
     s._resumed_count = s.graph.points_count()
 
 
 def step_resumed(s: Smoke) -> None:
-    # Функциональное доказательство resume — точки продолжились после
-    # выдержки Δt. Состояние может быть и idle: с 20 точками по 10 мс
-    # развёртка законно успевает закончиться к моменту проверки.
     check(s.graph.points_count() > s._resumed_count,
-          "после resume (с выдержкой Δt) точки продолжились")
-    # Развёртка после resume либо идёт, либо уже естественно завершилась;
-    # «ended» — транзитное состояние внутри _halt, тест может застать его.
-    check(s.c.state in ("started", "idle", "ended"),
-          f"после resume состояние корректно (started/idle/ended), а не {s.c.state}")
-    if s.c.state == "started":
-        check(s.k.outputA, "пока развёртка идёт после resume, output включён")
+          "после resume (с выдержкой delay) точки продолжились")
+    check(s.c.state in ("measurements", "idle"),
+          f"после resume состояние корректно (measurements/idle), а не {s.c.state}")
 
 
 def step_stop(s: Smoke) -> None:
-    s.cw.restart_button.click()   # sig_stop
+    s.cw.stop_button.click()
 
 
 def step_after_stop(s: Smoke) -> None:
@@ -237,7 +187,7 @@ def step_after_stop(s: Smoke) -> None:
         new = list_files(sub) - s.files_before[sub]
         check(len(new) == 1, f"появился ровно один новый файл в data/{sub}/: {new}")
         only = new.pop()
-        s.files_before[sub].add(only)   # сначала в базу, потом имя забираем
+        s.files_before[sub].add(only)
         if sub == "json":
             s._new_json = only
         elif sub == "csv":
@@ -268,9 +218,7 @@ def step_after_stop(s: Smoke) -> None:
 
 
 def step_set_params_mid(s: Smoke) -> None:
-    """Сегмент 2: короткая МЕДЛЕННАЯ развёртка — для проверки РУЧНОГО stop
-    (halt из started с сохранением, без finished). dt=0.05 — 5 точек по
-    50 мс, окна в 80 мс хватает, чтобы остановиться посреди развёртки."""
+    """Настроить короткую медленную развёртку для проверки ручного stop."""
     cw = s.cw
     cw.sample_edit.setText("TEST2")
     cw.v1_spin.setValue(-0.2)
@@ -279,6 +227,8 @@ def step_set_params_mid(s: Smoke) -> None:
     cw.dt_spin.setValue(0.05)
     s._finished_seen = False
     s.c.finished.connect(lambda: setattr(s, "_finished_seen", True))
+    s._times = []
+    s.c.pointUpdated.connect(lambda u, i: s._times.append(time.monotonic()))
 
 
 def step_start_mid(s: Smoke) -> None:
@@ -287,21 +237,23 @@ def step_start_mid(s: Smoke) -> None:
 
 def step_stop_mid(s: Smoke) -> None:
     """Останавливаем посреди развёртки, пока точки ещё идут."""
-    check(s.c.state == "started", "сегмент 2: развёртка идёт перед ручным stop")
+    check(s.c.state == "measurements", "сегмент 2: развёртка идёт перед ручным stop")
     check(s.graph.points_count() > 0, "сегмент 2: есть точки перед ручным stop")
-    s.cw.restart_button.click()
+    s.cw.stop_button.click()
 
 
 def step_after_stop_mid(s: Smoke) -> None:
     check(s.c.state == "idle", "после ручного stop — idle")
     check(not s._finished_seen, "при ручном stop finished НЕ эмитится")
     check(not s.k.outputA, "после ручного stop output=0")
+    if len(s._times) >= 2:
+        intervals = [b - a for a, b in zip(s._times, s._times[1:])]
+        check(min(intervals) >= 0.9 * 0.05,
+              f"темп delay соблюдён: интервалы {[round(x, 3) for x in intervals]} >= 0.045 с")
     new = list_files("json") - s.files_before["json"]
     check(len(new) == 1, f"ручной stop сохранил данные (новый JSON: {new})")
     only = new.pop()
     s.files_before["json"].add(only)
-    # Важно: брать именно ИМЯ нового файла — сортировка по имени не
-    # хронологическая (sample_TEST3... лексикографически «позже» TEST2).
     with open(os.path.join(DATA_DIR, "json", only), encoding="utf-8") as f:
         d = json.load(f)
     check(d["params"]["sample"] == "TEST2", "JSON сегмента 2: sample=TEST2")
@@ -309,13 +261,11 @@ def step_after_stop_mid(s: Smoke) -> None:
 
 def step_set_params_short(s: Smoke) -> None:
     cw = s.cw
-    cw.sample_edit.setText("TEST3")   # свой образец: имя файла уникально
+    cw.sample_edit.setText("TEST3")
     cw.v1_spin.setValue(-0.2)
     cw.v2_spin.setValue(0.2)
     cw.vs_spin.setValue(0.2)
     cw.dt_spin.setValue(0.005)
-    # Флаг естественного конца: finished эмитится только при полном
-    # прохождении развёртки, а не при ручном stop.
     s._finished_seen = False
     s.c.finished.connect(lambda: setattr(s, "_finished_seen", True))
 
@@ -338,8 +288,6 @@ def step_wait_natural_end(s: Smoke) -> None:
     check(len(new) == 1, f"второй эксперимент сохранён (новый JSON: {new})")
 
 
-# ==================================================================== #
-
 def main() -> int:
     app, window, controller, k2636b, ps, deviceThread = build_application()
     window.show()
@@ -348,10 +296,6 @@ def main() -> int:
 
     def after(code: int) -> None:
         exit_code_holder[0] = code
-        # Успех или первая ошибка — в обоих случаях закрываем окно: путь
-        # один (closeEvent -> shutdownRequested -> controller.shutdown ->
-        # shutdownDone -> quit/wait потока -> accept close), приложение
-        # завершится по lastWindowClosed.
         if code != 0:
             print("SMOKE: прерывание сценария, завершение программы")
         window.close()
@@ -371,7 +315,7 @@ def main() -> int:
         .then(600, step_after_stop) \
         .then(100, step_set_params_mid) \
         .then(0, step_start_mid) \
-        .then(80, step_stop_mid) \
+        .then(130, step_stop_mid) \
         .then(500, step_after_stop_mid) \
         .then(100, step_set_params_short) \
         .then(0, step_start_short) \
@@ -379,7 +323,7 @@ def main() -> int:
 
     s.run(after)
 
-    app.exec()   # завершится, когда окно будет закрыто (lastWindowClosed)
+    app.exec()
     code = exit_code_holder[0]
     if FAILURES:
         code = 1

@@ -3,6 +3,7 @@ import sys
 from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtWidgets import QApplication
 
+import theme
 from K2636B import K2636B
 from PS import PS
 from MainWindow import MainWindow
@@ -19,6 +20,9 @@ def build_application() -> tuple:
     """Создать приложение, потоки, объекты и окно, не запуская цикл событий."""
     app = QApplication(sys.argv)
     app.setApplicationName("Automated Probe Station")
+    font = app.font()
+    font.setPointSize(12)
+    app.setFont(font)
 
     deviceThread = QThread()
     deviceThread.setObjectName("deviceThread")
@@ -36,7 +40,7 @@ def build_application() -> tuple:
     actual_iv = ActualIV()
     window = MainWindow(graph, controller_widget, actual_iv, ps_widget, deviceThread)
 
-    wire(controller, k2636b, ps, window, graph,
+    wire(app, controller, k2636b, ps, window, graph,
          controller_widget, actual_iv, ps_widget, deviceThread)
 
     deviceThread.finished.connect(controller.deleteLater)
@@ -50,7 +54,7 @@ def build_application() -> tuple:
     return app, window, controller, k2636b, ps, deviceThread
 
 
-def wire(controller, k2636b, ps, window, graph,
+def wire(app, controller, k2636b, ps, window, graph,
          controller_widget, actual_iv, ps_widget, deviceThread) -> None:
     """Все connect() приложения — в одном месте."""
     controller_widget.sig_start.connect(controller.start, QC)
@@ -65,8 +69,12 @@ def wire(controller, k2636b, ps, window, graph,
     controller.resumeDone.connect(controller_widget.on_resumed, QC)
     controller.stopDone.connect(controller_widget.on_stopped, QC)
     controller.pointUpdated.connect(graph.add_point, QC)
+    controller.progressUpdated.connect(controller_widget.progress_bar.setValue, QC)
     controller.startDone.connect(graph.clear, QC)
     controller.stopDone.connect(graph.on_experiment_finished, QC)
+    controller.startDone.connect(actual_iv.lock, QC)
+    controller.stopDone.connect(actual_iv.unlock, QC)
+    controller.startFailed.connect(actual_iv.unlock, QC)
 
     k2636b.newIV_A.connect(actual_iv.on_iv_A, QC)
     k2636b.newIV_B.connect(actual_iv.on_iv_B, QC)
@@ -81,6 +89,13 @@ def wire(controller, k2636b, ps, window, graph,
 
     window.shutdownRequested.connect(controller.shutdown, QC)
     controller.shutdownDone.connect(window.on_shutdown_done, QC)
+
+    def apply_theme(name: str) -> None:
+        app.setStyleSheet(theme.qss(name))
+        graph.apply_theme(theme.graph_colors(name))
+
+    window.themeChanged.connect(apply_theme)
+    apply_theme(window.theme_combo.currentText())
 
 
 def main() -> int:

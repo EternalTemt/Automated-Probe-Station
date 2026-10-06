@@ -1,5 +1,3 @@
-import re
-
 from PySide6.QtCore import QRegularExpression, Signal
 from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
@@ -9,6 +7,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QVBoxLayout,
@@ -17,7 +16,7 @@ from PySide6.QtWidgets import (
 
 V1_MIN, V1_MAX = -1.000, -0.001
 V2_MIN, V2_MAX = 0.001, 1.000
-COMP_MIN, COMP_MAX = 1e-9, 0.1
+I_MAX_MIN, I_MAX_MAX = 1e-9, 0.1
 
 
 class ControllerWidget(QWidget):
@@ -38,14 +37,14 @@ class ControllerWidget(QWidget):
         self._state = "idle"
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("<b>Параметры измерения</b>"))
 
         form = QFormLayout()
 
         self.sample_edit = QLineEdit()
-        self.sample_edit.setPlaceholderText("напр. ABC123")
+        self.sample_edit.setPlaceholderText("до 15 симв.: A-Za-z 0-9 . _ -")
+        self.sample_edit.setMaxLength(15)
         self.sample_edit.setValidator(
-            QRegularExpressionValidator(QRegularExpression("^[A-Za-z0-9]*$"))
+            QRegularExpressionValidator(QRegularExpression("^[A-Za-z0-9._-]{0,15}$"))
         )
         form.addRow("Образец", self.sample_edit)
 
@@ -81,13 +80,13 @@ class ControllerWidget(QWidget):
         self.dt_spin.setValue(0.0)
         form.addRow("Δt", self.dt_spin)
 
-        self.comp_spin = QDoubleSpinBox()
-        self.comp_spin.setRange(COMP_MIN, COMP_MAX)
-        self.comp_spin.setDecimals(9)
-        self.comp_spin.setSingleStep(0.001)
-        self.comp_spin.setSuffix(" А")
-        self.comp_spin.setValue(0.01)
-        form.addRow("Compliance", self.comp_spin)
+        self.i_max_spin = QDoubleSpinBox()
+        self.i_max_spin.setRange(I_MAX_MIN, I_MAX_MAX)
+        self.i_max_spin.setDecimals(9)
+        self.i_max_spin.setSingleStep(0.001)
+        self.i_max_spin.setSuffix(" А")
+        self.i_max_spin.setValue(0.01)
+        form.addRow("I_max", self.i_max_spin)
 
         layout.addLayout(form)
 
@@ -123,6 +122,11 @@ class ControllerWidget(QWidget):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        layout.addWidget(self.progress_bar)
+
         buttons = QHBoxLayout()
         self.start_button = QPushButton("start")
         self.stop_button = QPushButton("stop")
@@ -135,9 +139,9 @@ class ControllerWidget(QWidget):
 
     def _collect_params(self) -> dict | None:
         """Собрать и провалидировать dict параметров для sig_start."""
-        sample = re.sub(r"[^A-Za-z0-9]", "", self.sample_edit.text())
-        if not sample:
-            self._show_error("Введите номер образца (латиница и цифры).")
+        sample = self.sample_edit.text()
+        if not sample or not sample.strip("."):
+            self._show_error("Введите номер образца (латиница, цифры, . _ -; до 15 символов).")
             return None
 
         if self.radio_op2.isChecked():
@@ -155,7 +159,7 @@ class ControllerWidget(QWidget):
             "Vs": self.vs_spin.value(),
             "dt": self.dt_spin.value(),
             "chipType": chip_type,
-            "compliance": self.comp_spin.value(),
+            "i_max": self.i_max_spin.value(),
         }
         if self._ps_widget is not None:
             a, b = self._ps_widget.get_contacts()
@@ -220,11 +224,9 @@ class ControllerWidget(QWidget):
             self.v2_spin,
             self.vs_spin,
             self.dt_spin,
-            self.comp_spin,
+            self.i_max_spin,
             self.radio_op2,
             self.radio_md2,
-            self.radio_lin,
-            self.radio_log,
         ):
             w.setEnabled(enabled)
         if self._ps_widget is not None:

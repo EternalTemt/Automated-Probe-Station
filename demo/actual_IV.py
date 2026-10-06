@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QButtonGroup,
     QGridLayout,
@@ -20,7 +20,6 @@ class ActualIV(QWidget):
         self._channel = "A"
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("<b>Текущие значения</b>"))
 
         grid = QGridLayout()
         self.u_value = QLabel("—")
@@ -77,3 +76,15 @@ class ActualIV(QWidget):
 
     def current_channel(self) -> str:
         return self._channel
+
+    @Slot()
+    def lock(self) -> None:
+        """Заблокировать выбор канала на время измерения."""
+        self.radio_a.setEnabled(False)
+        self.radio_b.setEnabled(False)
+
+    @Slot()
+    def unlock(self) -> None:
+        """Разблокировать выбор канала."""
+        self.radio_a.setEnabled(True)
+        self.radio_b.setEnabled(True)

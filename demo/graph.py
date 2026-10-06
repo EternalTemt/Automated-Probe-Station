@@ -1,10 +1,7 @@
-import math
 import os
 
 import pyqtgraph as pg
 from PySide6.QtWidgets import QVBoxLayout, QWidget
-
-LOG_FLOOR = 1e-12
 
 
 class Graph(QWidget):
@@ -25,6 +22,12 @@ class Graph(QWidget):
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         layout.addWidget(self.plot_widget)
 
+        zero_pen = pg.mkPen(color=(90, 90, 90), width=2)
+        self._zero_x = pg.InfiniteLine(angle=0, pen=zero_pen)
+        self._zero_y = pg.InfiniteLine(angle=90, pen=zero_pen)
+        self.plot_widget.addItem(self._zero_x)
+        self.plot_widget.addItem(self._zero_y)
+
         self.curve = self.plot_widget.plot(
             [], [],
             pen=pg.mkPen(color=(40, 110, 200), width=2),
@@ -37,19 +40,15 @@ class Graph(QWidget):
         """Новая точка развёртки от контроллера."""
         self._u.append(u)
         self._i.append(i)
-        self._redraw()
+        self.curve.setData(self._u, self._i)
 
     def set_log_scale(self, log_scale: bool) -> None:
-        """Переключение шкалы тока: False — линейная, True — log|I|."""
+        """Переключение шкалы тока: False — линейная, True — логарифмическая (только вид оси)."""
         self._log_scale = log_scale
-        if log_scale:
-            self.plot_widget.setLabel("left", "log|I|", units="А")
-        else:
-            self.plot_widget.setLabel("left", "I", units="А")
-        self._redraw()
+        self.plot_widget.getPlotItem().setLogMode(x=False, y=log_scale)
 
     def clear(self) -> None:
-        """Очистка графика (restart / новый старт)."""
+        """Очистка графика (новый старт)."""
         self._u.clear()
         self._i.clear()
         self.curve.setData([], [])
@@ -66,16 +65,22 @@ class Graph(QWidget):
         """Число накопленных точек (используется smoke_check)."""
         return len(self._u)
 
-    def _redraw(self) -> None:
-        if self._log_scale:
-            y = [math.log10(max(abs(v), LOG_FLOOR)) for v in self._i]
-        else:
-            y = self._i
-        self.curve.setData(self._u, y)
+    def apply_theme(self, colors: dict) -> None:
+        """Цвета фона, осей, кривой и осей нуля под выбранную тему."""
+        self.plot_widget.setBackground(colors["background"])
+        for name in ("bottom", "left"):
+            axis = self.plot_widget.getPlotItem().getAxis(name)
+            axis.setPen(pg.mkPen(color=colors["foreground"]))
+            axis.setTextPen(pg.mkPen(color=colors["foreground"]))
+        self.curve.setPen(pg.mkPen(color=colors["curve"], width=2))
+        self.curve.setSymbolBrush(colors["curve"])
+        zero_pen = pg.mkPen(color=colors["zero"], width=2)
+        self._zero_x.setPen(zero_pen)
+        self._zero_y.setPen(zero_pen)
 
     @staticmethod
     def _png_path_from_json(json_path: str) -> str:
-        """.../data/json/sample_X_<время>.json -> .../data/graphs/sample_X_<время>.png"""
+        """.../data/json/<имя>.json -> .../data/graphs/<имя>.png"""
         base = os.path.splitext(json_path)[0]
         head, tail = os.path.split(base)
         return os.path.join(os.path.dirname(head), "graphs", tail + ".png")

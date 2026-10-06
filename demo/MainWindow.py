@@ -1,11 +1,23 @@
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QMainWindow, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QComboBox,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
+
+from theme import THEMES
 
 
 class MainWindow(QMainWindow):
-    """Окно с графиком слева и столбцом виджетов справа."""
+    """Окно: график слева, столбец виджетов справа; каждый виджет — в рамке QGroupBox."""
 
     shutdownRequested = Signal()
+    themeChanged = Signal(str)
 
     def __init__(self, graph, controller_widget, actual_iv, ps_widget, deviceThread, parent=None):
         super().__init__(parent)
@@ -14,18 +26,29 @@ class MainWindow(QMainWindow):
         self._shutdown_accepted = False
         self._shutdown_requested = False
 
+        theme_row = QWidget()
+        theme_layout = QHBoxLayout(theme_row)
+        theme_layout.setContentsMargins(0, 0, 0, 0)
+        theme_layout.addWidget(QLabel("Тема:"))
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(THEMES)
+        self.theme_combo.currentTextChanged.connect(self.themeChanged)
+        theme_layout.addWidget(self.theme_combo)
+        theme_layout.addStretch(1)
+
         column = QWidget()
         column_layout = QVBoxLayout(column)
-        column_layout.addWidget(controller_widget)
-        column_layout.addWidget(actual_iv)
-        column_layout.addWidget(ps_widget)
+        column_layout.addWidget(self._boxed("Параметры измерения", controller_widget))
+        column_layout.addWidget(self._boxed("Текущие значения", actual_iv))
+        column_layout.addWidget(self._boxed("Контакты зондовой станции", ps_widget))
+        column_layout.addWidget(self._boxed("Оформление", theme_row))
         column_layout.addStretch(1)
         column.setMinimumWidth(280)
 
         graph.setMinimumSize(500, 400)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(graph)
+        splitter.addWidget(self._boxed("ВАХ", graph))
         splitter.addWidget(column)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
@@ -35,6 +58,14 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
 
         self.resize(1024, 640)
+
+    @staticmethod
+    def _boxed(title: str, widget: QWidget) -> QGroupBox:
+        """Виджет в рамке с заголовком."""
+        box = QGroupBox(title)
+        box_layout = QVBoxLayout(box)
+        box_layout.addWidget(widget)
+        return box
 
     def closeEvent(self, event) -> None:
         """Первый closeEvent — начать асинхронное завершение, повторный — закрыться."""

@@ -30,6 +30,7 @@ class Controller(QObject):
     resumeDone = Signal()
     stopDone = Signal(str)
     pointUpdated = Signal(float, float)
+    progressUpdated = Signal(int)
     finished = Signal()
     shutdownDone = Signal()
 
@@ -95,7 +96,7 @@ class Controller(QObject):
             )
             return
 
-        self._set_compliance(params["compliance"])
+        self._set_i_max(params["i_max"])
 
         self._set_output(True)
         if not self._get_output():
@@ -109,6 +110,7 @@ class Controller(QObject):
         self._u, self._i = [], []
         self.state = MEASUREMENTS
         self.startDone.emit()
+        self.progressUpdated.emit(0)
         self.sig_next_point.emit()
 
     @Slot()
@@ -193,6 +195,14 @@ class Controller(QObject):
         self._u.append(u)
         self._i.append(i)
         self.pointUpdated.emit(u, i)
+        self.progressUpdated.emit(len(self._u) * 100 // len(self._voltages))
+        if abs(i) >= 0.999 * self._params["i_max"]:
+            print(f"# controller: авария — |I|={abs(i):.3e} А достиг i_max")
+            self._halt(save=True)
+            self.startFailed.emit(
+                f"Экстренная остановка: |I| достиг i_max ({abs(i):.3e} А)"
+            )
+            return
         self.sig_next_point.emit()
 
     @staticmethod
@@ -222,6 +232,8 @@ class Controller(QObject):
         self._voltages = []
         self._idx = 0
         self.state = IDLE
+        if not natural:
+            self.progressUpdated.emit(0)
         self.stopDone.emit(path)
         if natural:
             self.finished.emit()
@@ -232,13 +244,19 @@ class Controller(QObject):
 
     def _save(self) -> str:
         """Сохранить JSON + CSV, вернуть путь к JSON."""
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        base = f"sample_{self._params['sample']}_{stamp}"
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        base = (f"{stamp}_{self._params['sample']}"
+                f"_A{self._params['contactA']:02d}_B{self._params['contactB']:02d}")
 
         os.makedirs(JSON_DIR, exist_ok=True)
         os.makedirs(CSV_DIR, exist_ok=True)
 
         json_path = os.path.join(JSON_DIR, base + ".json")
+        n = 0
+        while os.path.exists(json_path):
+            n += 1
+            json_path = os.path.join(JSON_DIR, f"{base}_{n}.json")
+        base = os.path.splitext(os.path.basename(json_path))[0]
         csv_path = os.path.join(CSV_DIR, base + ".csv")
         png_path = os.path.join(DATA_DIR, "graphs", base + ".png")
 
@@ -250,7 +268,7 @@ class Controller(QObject):
                 "V2": self._params["V2"],
                 "Vs": self._params["Vs"],
                 "dt": self._params["dt"],
-                "compliance": self._params["compliance"],
+                "i_max": self._params["i_max"],
                 "channel": self.channel,
                 "contactA": self._params["contactA"],
                 "contactB": self._params["contactB"],
@@ -265,7 +283,7 @@ class Controller(QObject):
 
         with open(csv_path, "w", encoding="utf-8", newline="") as f:
             f.write(f"# sample={self._params['sample']}\n")
-            for key in ("chipType", "V1", "V2", "Vs", "dt", "compliance",
+            for key in ("chipType", "V1", "V2", "Vs", "dt", "i_max",
                         "contactA", "contactB"):
                 f.write(f"# {key}={self._params[key]}\n")
             f.write(f"# channel={self.channel}\n")
@@ -280,15 +298,17 @@ class Controller(QObject):
         """Вернуть текст ошибки проверки параметров или None."""
         try:
             v1, v2, vs = params["V1"], params["V2"], params["Vs"]
-            dt, comp = params["dt"], params["compliance"]
+            dt, i_max = params["dt"], params["i_max"]
             chip = params["chipType"]
             a, b = params["contactA"], params["contactB"]
             sample = params["sample"]
         except KeyError as e:
             return f"Неполные параметры измерения: нет поля {e}"
 
-        if not sample:
-            return "Номер образца пуст"
+        if not sample or not str(sample).strip("."):
+            return "Номер образца пуст или недопустим"
+        if len(sample) > 15:
+            return f"Номер образца длиннее 15 символов ({len(sample)})"
         if not (-1.0 <= v1 < 0.0):
             return f"V1={v1} вне допустимого диапазона [-1.000; 0) В"
         if not (0.0 < v2 <= 1.0):
@@ -297,8 +317,8 @@ class Controller(QObject):
             return f"Vs={vs} должен быть положительным"
         if dt < 0.0:
             return f"Δt={dt} не может быть отрицательным"
-        if not (1e-9 <= comp <= 0.1):
-            return f"compliance={comp} вне диапазона 1 нА…100 мА"
+        if not (1e-9 <= i_max <= 0.1):
+            return f"i_max={i_max} вне диапазона 1 нА…100 мА"
         if chip not in CHIP_RANGES:
             return f"Неизвестный тип чипа: {chip}"
         lo, hi = CHIP_RANGES[chip]
@@ -326,11 +346,11 @@ class Controller(QObject):
     def _get_iv(self) -> tuple[float, float]:
         return self.k.get_iv_A() if self.channel == "A" else self.k.get_iv_B()
 
-    def _set_compliance(self, limit: float) -> None:
+    def _set_i_max(self, limit: float) -> None:
         if self.channel == "A":
-            self.k.set_compliance_A(limit)
+            self.k.set_i_max_A(limit)
         else:
-            self.k.set_compliance_B(limit)
+            self.k.set_i_max_B(limit)
 
     def _dt_ms(self) -> int:
         return int(round(self._params.get("dt", 0.0) * 1000))

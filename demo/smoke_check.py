@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -95,11 +96,11 @@ def step_set_params_full(s: Smoke) -> None:
     cw.v2_spin.setValue(1.0)
     cw.vs_spin.setValue(0.2)
     cw.dt_spin.setValue(0.01)
-    cw.comp_spin.setValue(0.01)
-    check(cw._ps_widget.spin_a.isEnabled(), "ячейки контактов доступны после выбора типа чипа")
-    check(cw._ps_widget.spin_a.maximum() == 15, "диапазон MD2: 1..15")
-    cw._ps_widget.spin_a.setValue(3)
-    cw._ps_widget.spin_b.setValue(4)
+    cw.i_max_spin.setValue(0.07)
+    check(cw._ps_widget.combo_a.isEnabled(), "ячейки контактов доступны после выбора типа чипа")
+    check(cw._ps_widget.combo_a.count() == 15, "диапазон MD2: 1..15")
+    cw._ps_widget.combo_a.setCurrentText("3")
+    cw._ps_widget.combo_b.setCurrentText("4")
 
 
 def _wait_for(cond, what: str, timeout_s: float = 3.0) -> None:
@@ -116,16 +117,32 @@ def step_exercise_scale_and_channel(s: Smoke) -> None:
     """Проверить связи scaleChanged и channelChanged между виджетами."""
     s.cw.radio_log.click()
     check(s.graph._log_scale, "scaleChanged -> set_log_scale(True)")
+    check(s.graph.plot_widget.getPlotItem().getViewBox().state["logMode"] == [False, True],
+          "лог-режим — через setLogMode оси (вид), не пересчёт значений")
     s.cw.radio_lin.click()
     check(not s.graph._log_scale, "scaleChanged -> set_log_scale(False)")
 
     from actual_IV import ActualIV
-    aiv = s.window.findChild(ActualIV)
+    s.aiv = s.window.findChild(ActualIV)
+    aiv = s.aiv
     aiv.radio_b.click()
     _wait_for(lambda: s.c.channel == "B", "channelChanged -> set_channel('B')")
     check(aiv.current_channel() == "B", "actual_IV показывает канал B")
     aiv.radio_a.click()
     _wait_for(lambda: s.c.channel == "A", "channelChanged -> set_channel('A')")
+
+
+def step_exercise_theme(s: Smoke) -> None:
+    """Проверить шрифт, рамки виджетов и переключение светлой/тёмной темы."""
+    from PySide6.QtWidgets import QGroupBox
+    check(s.app.font().pointSize() >= 12, "базовый шрифт приложения >= 12 pt")
+    check(isinstance(s.cw.parentWidget(), QGroupBox), "controller_widget в рамке QGroupBox")
+    check(isinstance(s.graph.parentWidget(), QGroupBox), "graph в рамке QGroupBox")
+    check(s.window.theme_combo.isEnabled(), "селектор темы доступен")
+    s.window.theme_combo.setCurrentText("Тёмная")
+    check("#2b2b2b" in s.app.styleSheet(), "тёмная тема применена (QSS)")
+    s.window.theme_combo.setCurrentText("Светлая")
+    check("#f5f5f5" in s.app.styleSheet(), "светлая тема применена (QSS)")
 
 
 def step_start(s: Smoke) -> None:
@@ -139,6 +156,13 @@ def step_points_flow(s: Smoke) -> None:
     check(s.cw.start_button.text() == "pause", "кнопка стала «pause»")
     check(not s.cw.v1_spin.isEnabled(), "поля заблокированы при измерении")
     check(s.k.outputA, "output канала A включён на время измерения")
+    check(s.cw.radio_log.isEnabled(), "масштаб lin/log доступен во время измерения")
+    s.cw.radio_log.click()
+    check(s.graph._log_scale, "переключение в лог во время измерения")
+    s.cw.radio_lin.click()
+    check(not s.aiv.radio_a.isEnabled(), "выбор канала A/B заблокирован во время измерения")
+    check(s.cw.progress_bar.value() > 0, "прогресс-бар идёт во время измерения")
+    check(s.window.theme_combo.isEnabled(), "селектор темы доступен во время измерения")
 
 
 def step_pause(s: Smoke) -> None:
@@ -178,6 +202,7 @@ def step_after_stop(s: Smoke) -> None:
     check(s.cw.start_button.text() == "start", "кнопка вернулась в «start»")
     check(s.cw.v1_spin.isEnabled(), "поля разблокированы после остановки")
     check(not s.k.outputA, "после stop output=0")
+    check(s.aiv.radio_a.isEnabled(), "выбор канала разблокирован после остановки")
 
     s._new_json = None
     s._new_csv = None
@@ -195,10 +220,14 @@ def step_after_stop(s: Smoke) -> None:
 
     s._json_path = os.path.join(DATA_DIR, "json", s._new_json)
 
+    check(re.match(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_TEST1_A03_B04(_\d+)?\.json$",
+                   s._new_json) is not None,
+          f"имя JSON по шаблону: {s._new_json}")
+
     with open(s._json_path, encoding="utf-8") as f:
         d = json.load(f)
     p = d["params"]
-    for key in ("sample", "chipType", "V1", "V2", "Vs", "dt", "compliance",
+    for key in ("sample", "chipType", "V1", "V2", "Vs", "dt", "i_max",
                 "channel", "contactA", "contactB"):
         check(key in p, f"JSON.params содержит {key}")
     check(p["sample"] == "TEST1" and p["chipType"] == "MD2", "JSON: sample/chipType")
@@ -275,17 +304,57 @@ def step_start_short(s: Smoke) -> None:
 
 
 def step_wait_natural_end(s: Smoke) -> None:
-    """Поллинг до естественного перехода в idle (таймаут 15 с)."""
+    """Поллинг до естественного конца развёртки — флага finished (таймаут 15 с).
+
+    Ориентир — именно сигнал finished: state==idle истинно и ДО обработки
+    sig_start worker-потоком, такой поллинг завершается раньше времени."""
     for _ in range(150):
-        if s.c.state == "idle":
+        if s._finished_seen:
             break
         time.sleep(0.1)
         s.app.processEvents()
-    check(s.c.state == "idle", "после естественного конца развёртки — idle")
     check(s._finished_seen, "сигнал finished эмитнут при естественном конце")
+    check(s.c.state == "idle", "после естественного конца развёртки — idle")
     check(not s.k.outputA, "после естественного конца output=0")
+    check(s.cw.progress_bar.value() == 100, "прогресс 100% после естественного конца")
     new = list_files("json") - s.files_before["json"]
     check(len(new) == 1, f"второй эксперимент сохранён (новый JSON: {new})")
+    s.files_before["json"] |= new
+
+
+def step_set_params_emergency(s: Smoke) -> None:
+    """Развёртка с i_max=1 нА: симуляция упирается в ограничение на 2-й точке."""
+    cw = s.cw
+    cw.sample_edit.setText("TEST4")
+    cw.v1_spin.setValue(-0.2)
+    cw.v2_spin.setValue(0.2)
+    cw.vs_spin.setValue(0.2)
+    cw.dt_spin.setValue(0.005)
+    cw.i_max_spin.setValue(1e-9)
+
+
+def step_start_emergency(s: Smoke) -> None:
+    s.cw.start_button.click()
+
+
+def step_after_emergency(s: Smoke) -> None:
+    """Ждать аварийной остановки: причина i_max в статусе GUI (таймаут 10 с).
+
+    Ждать нужно именно ПРИЧИНУ, а не state==idle: idle наблюдается и до
+    обработки sig_start worker-потоком — такой поллинг проходит раньше
+    времени, и проверки output/finished читают состояние чужого старта."""
+    for _ in range(100):
+        if "i_max" in s.cw.status_label.text():
+            break
+        time.sleep(0.1)
+        s.app.processEvents()
+    check("i_max" in s.cw.status_label.text(),
+          f"авария i_max: причина показана в GUI ({s.cw.status_label.text()!r})")
+    check(s.c.state == "idle", "авария i_max: контроллер вернулся в idle")
+    check(not s.k.outputA, "авария i_max: output=0")
+    new = list_files("json") - s.files_before["json"]
+    check(len(new) == 1, f"авария i_max: данные сохранены (новый JSON: {new})")
+    s.files_before["json"] |= new
 
 
 def main() -> int:
@@ -304,6 +373,7 @@ def main() -> int:
     s.then(0, step_wait_init) \
         .then(100, step_set_params_full) \
         .then(0, step_exercise_scale_and_channel) \
+        .then(0, step_exercise_theme) \
         .then(0, step_start) \
         .then(150, step_points_flow) \
         .then(0, step_pause) \
@@ -319,7 +389,10 @@ def main() -> int:
         .then(500, step_after_stop_mid) \
         .then(100, step_set_params_short) \
         .then(0, step_start_short) \
-        .then(0, step_wait_natural_end)
+        .then(0, step_wait_natural_end) \
+        .then(100, step_set_params_emergency) \
+        .then(0, step_start_emergency) \
+        .then(0, step_after_emergency)
 
     s.run(after)
 

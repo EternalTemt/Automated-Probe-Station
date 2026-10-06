@@ -44,8 +44,8 @@ class K2636B(QObject):
         self.voltageB = 0.0
         self.outputB = False
 
-        self._complianceA = 0.1
-        self._complianceB = 0.1
+        self._i_maxA = 0.1
+        self._i_maxB = 0.1
 
         self._sim_last_u = {"A": 0.0, "B": 0.0}
         self._sim_dir = {"A": 1, "B": 1}
@@ -268,16 +268,16 @@ class K2636B(QObject):
             self.newIV_B.emit(iv)
         return iv
 
-    def set_compliance_A(self, limit: float) -> None:
-        self._set_compliance("A", limit)
+    def set_i_max_A(self, limit: float) -> None:
+        self._set_i_max("A", limit)
 
-    def set_compliance_B(self, limit: float) -> None:
-        self._set_compliance("B", limit)
+    def set_i_max_B(self, limit: float) -> None:
+        self._set_i_max("B", limit)
 
-    def _set_compliance(self, ch: str, limit: float) -> None:
+    def _set_i_max(self, ch: str, limit: float) -> None:
         """Установить ограничение тока канала (команда smuX.source.limiti)."""
         if self.debug:
-            print(f"# K2636B: set_compliance_{ch}({limit})")
+            print(f"# K2636B: set_i_max_{ch}({limit})")
         if not self.opened:
             print("# K2636B err: not opened")
             return
@@ -289,9 +289,9 @@ class K2636B(QObject):
                 return
 
         if ch == "A":
-            self._complianceA = limit
+            self._i_maxA = limit
         else:
-            self._complianceB = limit
+            self._i_maxB = limit
 
     def _sim_iv(self, ch: str, u: float) -> tuple[float, float]:
         """Правдоподобная модель ВАХ для работы без прибора."""
@@ -305,7 +305,7 @@ class K2636B(QObject):
         i = 0.05 * u * abs(u) * asym
         i += random.gauss(0.0, 1e-5 * max(abs(i), 1e-9))
 
-        limit = self._complianceA if ch == "A" else self._complianceB
+        limit = self._i_maxA if ch == "A" else self._i_maxB
         if abs(i) > limit:
             i = math.copysign(limit, i)
         return (i, u)

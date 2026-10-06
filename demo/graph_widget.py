@@ -1,5 +1,3 @@
-import os
-
 import pyqtgraph as pg
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
@@ -35,6 +33,27 @@ class Graph(QWidget):
             symbolSize=5,
             symbolBrush=(40, 110, 200),
         )
+        self._history_curves: dict[str, object] = {}
+
+    def add_history_curve(self, name: str, u: list, i: list, color) -> None:
+        """Кривая из истории (.vag): именованная, переживает clear() живой кривой."""
+        self.remove_history_curve(name)
+        self._history_curves[name] = self.plot_widget.plot(
+            list(u), list(i),
+            pen=pg.mkPen(color=color, width=1),
+            symbol="s",
+            symbolSize=4,
+            symbolBrush=color,
+        )
+
+    def remove_history_curve(self, name: str) -> None:
+        curve = self._history_curves.pop(name, None)
+        if curve is not None:
+            self.plot_widget.removeItem(curve)
+
+    def history_curve_count(self) -> int:
+        """Число кривых истории на графике (используется smoke_check)."""
+        return len(self._history_curves)
 
     def add_point(self, u: float, i: float) -> None:
         """Новая точка развёртки от контроллера."""
@@ -48,18 +67,10 @@ class Graph(QWidget):
         self.plot_widget.getPlotItem().setLogMode(x=False, y=log_scale)
 
     def clear(self) -> None:
-        """Очистка графика (новый старт)."""
+        """Очистка живой кривой (новый старт); кривые истории не трогает."""
         self._u.clear()
         self._i.clear()
         self.curve.setData([], [])
-
-    def on_experiment_finished(self, json_path: str) -> None:
-        """Сохранение PNG графика рядом с JSON при завершении измерения."""
-        if not json_path:
-            return
-        png_path = self._png_path_from_json(json_path)
-        os.makedirs(os.path.dirname(png_path), exist_ok=True)
-        self.plot_widget.grab().save(png_path, "PNG")
 
     def points_count(self) -> int:
         """Число накопленных точек (используется smoke_check)."""
@@ -77,10 +88,3 @@ class Graph(QWidget):
         zero_pen = pg.mkPen(color=colors["zero"], width=2)
         self._zero_x.setPen(zero_pen)
         self._zero_y.setPen(zero_pen)
-
-    @staticmethod
-    def _png_path_from_json(json_path: str) -> str:
-        """.../data/json/<имя>.json -> .../data/graphs/<имя>.png"""
-        base = os.path.splitext(json_path)[0]
-        head, tail = os.path.split(base)
-        return os.path.join(os.path.dirname(head), "graphs", tail + ".png")

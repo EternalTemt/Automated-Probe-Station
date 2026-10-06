@@ -52,3 +52,13 @@ class PSWidget(QWidget):
     def get_contacts(self) -> tuple[int, int]:
         """Текущая выбранная пара контактов (a, b)."""
         return (int(self.combo_a.currentText()), int(self.combo_b.currentText()))
+
+    def set_contacts(self, a: int, b: int) -> None:
+        """Выставить пару контактов извне (load default из config.json)."""
+        if self._chip_type is None:
+            return
+        lo, hi = CHIP_RANGES[self._chip_type]
+        if lo <= a <= hi:
+            self.combo_a.setCurrentText(str(a))
+        if lo <= b <= hi:
+            self.combo_b.setCurrentText(str(b))

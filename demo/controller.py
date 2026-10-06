@@ -1,4 +1,3 @@
-import csv
 import json
 import os
 from datetime import datetime
@@ -15,10 +14,6 @@ WAITING = "waiting"
 CHIP_RANGES = {"MD2": (1, 15), "OP2": (1, 13)}
 
 MAX_POINTS = 100_000
-
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-JSON_DIR = os.path.join(DATA_DIR, "json")
-CSV_DIR = os.path.join(DATA_DIR, "csv")
 
 
 class Controller(QObject):
@@ -243,22 +238,16 @@ class Controller(QObject):
         self._halt(save=True, natural=True)
 
     def _save(self) -> str:
-        """Сохранить JSON + CSV, вернуть путь к JSON."""
-        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        base = (f"{stamp}_{self._params['sample']}"
+        """Сохранить .vag (JSON: params + u/i) в папку запуска, вернуть путь."""
+        session_dir = self._params["session_dir"]
+        base = (f"{datetime.now():%H-%M-%S}_{self._params['sample']}"
                 f"_A{self._params['contactA']:02d}_B{self._params['contactB']:02d}")
 
-        os.makedirs(JSON_DIR, exist_ok=True)
-        os.makedirs(CSV_DIR, exist_ok=True)
-
-        json_path = os.path.join(JSON_DIR, base + ".json")
+        vag_path = os.path.join(session_dir, base + ".vag")
         n = 0
-        while os.path.exists(json_path):
+        while os.path.exists(vag_path):
             n += 1
-            json_path = os.path.join(JSON_DIR, f"{base}_{n}.json")
-        base = os.path.splitext(os.path.basename(json_path))[0]
-        csv_path = os.path.join(CSV_DIR, base + ".csv")
-        png_path = os.path.join(DATA_DIR, "graphs", base + ".png")
+            vag_path = os.path.join(session_dir, f"{base}_{n}.vag")
 
         data = {
             "params": {
@@ -275,23 +264,12 @@ class Controller(QObject):
             },
             "u": list(self._u),
             "i": list(self._i),
-            "graph_png": png_path,
             "saved_at": datetime.now().isoformat(timespec="seconds"),
         }
-        with open(json_path, "w", encoding="utf-8") as f:
+        with open(vag_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-        with open(csv_path, "w", encoding="utf-8", newline="") as f:
-            f.write(f"# sample={self._params['sample']}\n")
-            for key in ("chipType", "V1", "V2", "Vs", "dt", "i_max",
-                        "contactA", "contactB"):
-                f.write(f"# {key}={self._params[key]}\n")
-            f.write(f"# channel={self.channel}\n")
-            writer = csv.writer(f)
-            writer.writerow(["U", "I"])
-            writer.writerows(zip(self._u, self._i))
-
-        return json_path
+        return vag_path
 
     @staticmethod
     def _validate(params: dict) -> str | None:
@@ -305,20 +283,31 @@ class Controller(QObject):
         except KeyError as e:
             return f"Неполные параметры измерения: нет поля {e}"
 
+        limits = params.get("limits", {})
+        v_min = limits.get("V_min", -40.0)
+        v_max = limits.get("V_max", 40.0)
+        vs_min = limits.get("Vs_min", 0.001)
+        vs_max = limits.get("Vs_max", 2.0)
+        dt_min = limits.get("dt_min", 0.0)
+        dt_max = limits.get("dt_max", 60.0)
+        i_max_limit = limits.get("i_max_limit", 0.1)
+
+        if not params.get("session_dir"):
+            return "Нет папки запуска для сохранения данных"
         if not sample or not str(sample).strip("."):
             return "Номер образца пуст или недопустим"
         if len(sample) > 15:
             return f"Номер образца длиннее 15 символов ({len(sample)})"
-        if not (-1.0 <= v1 < 0.0):
-            return f"V1={v1} вне допустимого диапазона [-1.000; 0) В"
-        if not (0.0 < v2 <= 1.0):
-            return f"V2={v2} вне допустимого диапазона (0; +1.000] В"
-        if not (0.0 < vs <= 2.0):
-            return f"Vs={vs} должен быть положительным"
-        if dt < 0.0:
-            return f"Δt={dt} не может быть отрицательным"
-        if not (1e-9 <= i_max <= 0.1):
-            return f"i_max={i_max} вне диапазона 1 нА…100 мА"
+        if not (v_min <= v1 < 0.0):
+            return f"V1={v1} вне допустимого диапазона [{v_min}; 0) В"
+        if not (0.0 < v2 <= v_max):
+            return f"V2={v2} вне допустимого диапазона (0; {v_max}] В"
+        if not (vs_min <= vs <= vs_max):
+            return f"Vs={vs} вне диапазона [{vs_min}; {vs_max}] В"
+        if not (dt_min <= dt <= dt_max):
+            return f"Δt={dt} вне диапазона [{dt_min}; {dt_max}] с"
+        if not (1e-9 <= i_max <= i_max_limit):
+            return f"i_max={i_max} вне диапазона 1 нА…{i_max_limit} А"
         if chip not in CHIP_RANGES:
             return f"Неизвестный тип чипа: {chip}"
         lo, hi = CHIP_RANGES[chip]

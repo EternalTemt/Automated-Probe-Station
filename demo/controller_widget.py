@@ -30,10 +30,11 @@ class ControllerWidget(QWidget):
     chipTypeChanged = Signal(str)
     scaleChanged = Signal(bool)
 
-    def __init__(self, ps_widget=None, parent=None):
-        """Создать поля ввода и кнопки; ps_widget даёт выбранные контакты для старта."""
+    def __init__(self, ps_widget=None, session=None, parent=None):
+        """Создать поля ввода и кнопки; ps_widget даёт контакты, session — папку запуска и лимиты."""
         super().__init__(parent)
         self._ps_widget = ps_widget
+        self._session = session
         self._state = "idle"
 
         layout = QVBoxLayout(self)
@@ -135,10 +136,19 @@ class ControllerWidget(QWidget):
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
         layout.addLayout(buttons)
+
+        default_buttons = QHBoxLayout()
+        self.load_default_button = QPushButton("Load default")
+        self.set_default_button = QPushButton("Set default")
+        self.load_default_button.clicked.connect(self.load_default)
+        self.set_default_button.clicked.connect(self.set_default)
+        default_buttons.addWidget(self.load_default_button)
+        default_buttons.addWidget(self.set_default_button)
+        layout.addLayout(default_buttons)
         layout.addStretch(1)
 
-    def _collect_params(self) -> dict | None:
-        """Собрать и провалидировать dict параметров для sig_start."""
+    def _collect_values(self) -> dict | None:
+        """Собрать и провалидировать рабочие значения полей (секция values конфига)."""
         sample = self.sample_edit.text()
         if not sample or not sample.strip("."):
             self._show_error("Введите номер образца (латиница, цифры, . _ -; до 15 символов).")
@@ -152,7 +162,7 @@ class ControllerWidget(QWidget):
             self._show_error("Выберите тип чипа (OP2 или MD2).")
             return None
 
-        params = {
+        values = {
             "sample": sample,
             "V1": self.v1_spin.value(),
             "V2": self.v2_spin.value(),
@@ -160,12 +170,64 @@ class ControllerWidget(QWidget):
             "dt": self.dt_spin.value(),
             "chipType": chip_type,
             "i_max": self.i_max_spin.value(),
+            "scale": "log" if self.radio_log.isChecked() else "lin",
         }
         if self._ps_widget is not None:
             a, b = self._ps_widget.get_contacts()
-            params["contactA"] = a
-            params["contactB"] = b
+            values["contactA"] = a
+            values["contactB"] = b
+        return values
+
+    def _collect_params(self) -> dict | None:
+        """Собрать dict параметров для sig_start: values + папка запуска и лимиты."""
+        params = self._collect_values()
+        if params is None:
+            return None
+        if self._session is not None and self._session.dir:
+            params["session_dir"] = self._session.dir
+            params["limits"] = self._session.read_config()["limits"]
         return params
+
+    def set_default(self) -> None:
+        """Кнопка «Set default»: выгрузить поля GUI в config.json (лимиты сохраняются)."""
+        values = self._collect_values()
+        if values is not None and self._session is not None:
+            self._session.write_values(values)
+            self._clear_error()
+
+    def load_default(self) -> None:
+        """Кнопка «Load default»: подгрузить values и limits из config.json в GUI."""
+        if self._session is not None:
+            self.apply_config(self._session.read_config())
+            self._clear_error()
+
+    def apply_config(self, cfg: dict) -> None:
+        """Применить конфиг: limits — в диапазоны спинбоксов, values — в поля."""
+        limits, values = cfg["limits"], cfg["values"]
+        self.v1_spin.setRange(limits["V_min"], -0.001)
+        self.v2_spin.setRange(0.001, limits["V_max"])
+        self.vs_spin.setRange(limits["Vs_min"], limits["Vs_max"])
+        self.dt_spin.setRange(limits["dt_min"], limits["dt_max"])
+        self.i_max_spin.setRange(1e-9, limits["i_max_limit"])
+
+        self.sample_edit.setText(str(values["sample"]))
+        self.v1_spin.setValue(float(values["V1"]))
+        self.v2_spin.setValue(float(values["V2"]))
+        self.vs_spin.setValue(float(values["Vs"]))
+        self.dt_spin.setValue(float(values["dt"]))
+        self.i_max_spin.setValue(float(values["i_max"]))
+
+        chip = values.get("chipType")
+        if chip in ("MD2", "OP2"):
+            (self.radio_md2 if chip == "MD2" else self.radio_op2).setChecked(True)
+            self.chipTypeChanged.emit(chip)
+            if self._ps_widget is not None:
+                self._ps_widget.set_contacts(int(values["contactA"]),
+                                             int(values["contactB"]))
+
+        log_scale = values.get("scale") == "log"
+        (self.radio_log if log_scale else self.radio_lin).setChecked(True)
+        self.scaleChanged.emit(log_scale)
 
     def _on_start_clicked(self) -> None:
         """Кнопка «start» по кругу: start -> pause -> resume -> pause ..."""
@@ -227,6 +289,8 @@ class ControllerWidget(QWidget):
             self.i_max_spin,
             self.radio_op2,
             self.radio_md2,
+            self.load_default_button,
+            self.set_default_button,
         ):
             w.setEnabled(enabled)
         if self._ps_widget is not None:

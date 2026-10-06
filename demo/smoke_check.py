@@ -5,7 +5,7 @@ import sys
 import time
 import traceback
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -14,7 +14,6 @@ from controller_widget import ControllerWidget  # noqa: E402
 from graph import Graph  # noqa: E402
 
 FAILURES: list[str] = []
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
 def check(cond: bool, what: str) -> None:
@@ -25,9 +24,8 @@ def check(cond: bool, what: str) -> None:
         raise AssertionError(what)
 
 
-def list_files(sub: str) -> set:
-    d = os.path.join(DATA_DIR, sub)
-    return set(os.listdir(d)) if os.path.isdir(d) else set()
+def list_files(dir_path: str) -> set:
+    return set(os.listdir(dir_path)) if os.path.isdir(dir_path) else set()
 
 
 class Smoke:
@@ -85,7 +83,50 @@ def step_wait_init(s: Smoke) -> None:
     print(f"  info: K2636B.simulated = {s.k.simulated} (ожидаем True без железа)")
     check(s.k.simulated, "K2636B в режиме симуляции")
     check(s.c.state == "idle", "контроллер в idle после инициализации")
-    s.files_before = {sub: list_files(sub) for sub in ("json", "csv", "graphs")}
+    s.session_dir = s.cw._session.dir
+    check(os.path.isdir(s.session_dir), "папка запуска создана при старте")
+    check(os.path.exists(os.path.join(s.session_dir, "config.json")),
+          "config.json создан при старте")
+    s.files_before = list_files(s.session_dir)
+
+
+def step_config_startup(s: Smoke) -> None:
+    """Поля и лимиты GUI при старте соответствуют свежему config.json."""
+    cw = s.cw
+    with open(os.path.join(s.session_dir, "config.json"), encoding="utf-8") as f:
+        cfg = json.load(f)
+    check(cw.sample_edit.text() == cfg["values"]["sample"], "старт: sample из config.json")
+    check(cw.v1_spin.value() == cfg["values"]["V1"], "старт: V1 из config.json")
+    check(cw.v1_spin.minimum() == cfg["limits"]["V_min"],
+          "старт: лимит V_min в диапазоне спинбокса")
+    check(cw.i_max_spin.maximum() == cfg["limits"]["i_max_limit"],
+          "старт: лимит i_max в диапазоне спинбокса")
+
+
+def step_exercise_defaults(s: Smoke) -> None:
+    """Кнопки set/load default: запись в config.json, roundtrip, лимиты из консоли."""
+    cw = s.cw
+    cfg_path = os.path.join(s.session_dir, "config.json")
+    cw.sample_edit.setText("DFLT")
+    cw.v1_spin.setValue(-0.5)
+    cw.set_default_button.click()
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    check(cfg["values"]["V1"] == -0.5, "set default: V1 выгружен в config.json")
+    check(cfg["values"]["sample"] == "DFLT", "set default: sample выгружен")
+    check(cfg["limits"]["V_min"] == -40.0, "set default: limits не тронуты")
+    cw.v1_spin.setValue(-0.9)
+    cw.load_default_button.click()
+    check(cw.v1_spin.value() == -0.5, "load default: поле восстановлено из config.json")
+    cfg["limits"]["V_min"] = -2.0
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    cw.load_default_button.click()
+    check(cw.v1_spin.minimum() == -2.0, "load default: лимит V_min применён из консоли")
+    cfg["limits"]["V_min"] = -40.0
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    cw.load_default_button.click()
 
 
 def step_set_params_full(s: Smoke) -> None:
@@ -155,6 +196,8 @@ def step_points_flow(s: Smoke) -> None:
     check(s.graph.points_count() > s._n0, "точки идут на график")
     check(s.cw.start_button.text() == "pause", "кнопка стала «pause»")
     check(not s.cw.v1_spin.isEnabled(), "поля заблокированы при измерении")
+    check(not s.cw.load_default_button.isEnabled(),
+          "load/set default заблокированы при измерении")
     check(s.k.outputA, "output канала A включён на время измерения")
     check(s.cw.radio_log.isEnabled(), "масштаб lin/log доступен во время измерения")
     s.cw.radio_log.click()
@@ -201,49 +244,73 @@ def step_after_stop(s: Smoke) -> None:
     check(s.c.state == "idle", "после stop контроллер вернулся в idle")
     check(s.cw.start_button.text() == "start", "кнопка вернулась в «start»")
     check(s.cw.v1_spin.isEnabled(), "поля разблокированы после остановки")
+    check(s.cw.load_default_button.isEnabled(),
+          "load/set default разблокированы после остановки")
     check(not s.k.outputA, "после stop output=0")
     check(s.aiv.radio_a.isEnabled(), "выбор канала разблокирован после остановки")
 
-    s._new_json = None
-    s._new_csv = None
-    for sub in ("json", "csv", "graphs"):
-        check(os.path.isdir(os.path.join(DATA_DIR, sub)),
-              f"создана папка data/{sub}/")
-        new = list_files(sub) - s.files_before[sub]
-        check(len(new) == 1, f"появился ровно один новый файл в data/{sub}/: {new}")
-        only = new.pop()
-        s.files_before[sub].add(only)
-        if sub == "json":
-            s._new_json = only
-        elif sub == "csv":
-            s._new_csv = only
+    new = list_files(s.session_dir) - s.files_before
+    check(len(new) == 1, f"появился ровно один новый файл (.vag): {new}")
+    only = new.pop()
+    s.files_before.add(only)
 
-    s._json_path = os.path.join(DATA_DIR, "json", s._new_json)
+    s._vag_path = os.path.join(s.session_dir, only)
 
-    check(re.match(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_TEST1_A03_B04(_\d+)?\.json$",
-                   s._new_json) is not None,
-          f"имя JSON по шаблону: {s._new_json}")
+    check(re.match(r"^\d{2}-\d{2}-\d{2}_TEST1_A03_B04(_\d+)?\.vag$",
+                   only) is not None,
+          f"имя .vag по шаблону: {only}")
 
-    with open(s._json_path, encoding="utf-8") as f:
+    with open(s._vag_path, encoding="utf-8") as f:
         d = json.load(f)
     p = d["params"]
     for key in ("sample", "chipType", "V1", "V2", "Vs", "dt", "i_max",
                 "channel", "contactA", "contactB"):
-        check(key in p, f"JSON.params содержит {key}")
-    check(p["sample"] == "TEST1" and p["chipType"] == "MD2", "JSON: sample/chipType")
-    check(p["contactA"] == 3 and p["contactB"] == 4, "JSON: контакты в параметрах")
-    check(p["channel"] == "A", "JSON: канал развёртки A")
+        check(key in p, f".vag params содержит {key}")
+    check(p["sample"] == "TEST1" and p["chipType"] == "MD2", ".vag: sample/chipType")
+    check(p["contactA"] == 3 and p["contactB"] == 4, ".vag: контакты в параметрах")
+    check(p["channel"] == "A", ".vag: канал развёртки A")
     check(p["V1"] == -1.0 and p["V2"] == 1.0 and p["Vs"] == 0.2 and p["dt"] == 0.01,
-          "JSON: параметры развёртки")
-    check(len(d["u"]) > 0 and len(d["i"]) == len(d["u"]), "JSON: массивы точек")
-    check(d["graph_png"].endswith(".png") and os.path.exists(d["graph_png"]),
-          "JSON: путь к существующему PNG")
-    check(os.path.getsize(d["graph_png"]) > 0, "PNG не пустой")
+          ".vag: параметры развёртки")
+    check(len(d["u"]) > 0 and len(d["i"]) == len(d["u"]), ".vag: массивы точек")
+    check("graph_png" not in d, ".vag: поля graph_png нет (PNG не сохраняется)")
+    check(not s._vag_path.endswith(".csv"), ".vag: CSV не создаётся")
 
-    csv_path = os.path.join(DATA_DIR, "csv", s._new_csv)
-    with open(csv_path, encoding="utf-8") as f:
-        head = f.read(300)
-    check("# sample=TEST1" in head and "U,I" in head, "CSV: заголовок и колонки U,I")
+
+def step_exercise_history(s: Smoke) -> None:
+    """История: файл в списке после stop, галочка строит кривую, удаление."""
+    from history import History
+    h = s.window.findChild(History)
+    check(h is not None, "виджет истории присутствует в окне")
+    s.history = h
+
+    check(s._vag_path in h._items, "история: свежий .vag появился в списке после stop")
+    item = h._items[s._vag_path]
+    block = item.parent()
+    check(block.child(0) is item, "история: новый файл — первым в блоке")
+    check(h.tree.topLevelItem(0) is block, "история: блок активного запуска наверху")
+
+    item.setCheckState(0, Qt.CheckState.Checked)
+    check(s.graph.history_curve_count() == 1, "история: галочка построила кривую")
+    check(not item.icon(0).isNull(), "история: цветной квадрат у отмеченного файла")
+    s.graph.clear()
+    check(s.graph.history_curve_count() == 1,
+          "история: clear() живой кривой не трогает кривые истории")
+    item.setCheckState(0, Qt.CheckState.Unchecked)
+    check(s.graph.history_curve_count() == 0, "история: снятие галочки убрало кривую")
+
+    broken = os.path.join(s.session_dir, "00-00-00_BROKEN_A01_B01.vag")
+    with open(broken, "w", encoding="utf-8") as f:
+        f.write("это не json")
+    h.add_file(broken)
+    broken_item = h._items[broken]
+    broken_item.setCheckState(0, Qt.CheckState.Checked)
+    check(s.graph.history_curve_count() == 0, "история: битый .vag не дал кривую")
+    check("(ошибка)" in broken_item.text(0), "история: битый .vag помечен «(ошибка)»")
+
+    h._delete([s._vag_path, broken])
+    check(not os.path.exists(s._vag_path), "история: файл удалён с диска")
+    check(s._vag_path not in h._items, "история: файл удалён из списка")
+    check(s.graph.history_curve_count() == 0, "история: кривая удалённого файла снята")
 
 
 def step_set_params_mid(s: Smoke) -> None:
@@ -279,13 +346,13 @@ def step_after_stop_mid(s: Smoke) -> None:
         intervals = [b - a for a, b in zip(s._times, s._times[1:])]
         check(min(intervals) >= 0.9 * 0.05,
               f"темп delay соблюдён: интервалы {[round(x, 3) for x in intervals]} >= 0.045 с")
-    new = list_files("json") - s.files_before["json"]
-    check(len(new) == 1, f"ручной stop сохранил данные (новый JSON: {new})")
+    new = list_files(s.session_dir) - s.files_before
+    check(len(new) == 1, f"ручной stop сохранил данные (новый .vag: {new})")
     only = new.pop()
-    s.files_before["json"].add(only)
-    with open(os.path.join(DATA_DIR, "json", only), encoding="utf-8") as f:
+    s.files_before.add(only)
+    with open(os.path.join(s.session_dir, only), encoding="utf-8") as f:
         d = json.load(f)
-    check(d["params"]["sample"] == "TEST2", "JSON сегмента 2: sample=TEST2")
+    check(d["params"]["sample"] == "TEST2", ".vag сегмента 2: sample=TEST2")
 
 
 def step_set_params_short(s: Smoke) -> None:
@@ -317,9 +384,9 @@ def step_wait_natural_end(s: Smoke) -> None:
     check(s.c.state == "idle", "после естественного конца развёртки — idle")
     check(not s.k.outputA, "после естественного конца output=0")
     check(s.cw.progress_bar.value() == 100, "прогресс 100% после естественного конца")
-    new = list_files("json") - s.files_before["json"]
-    check(len(new) == 1, f"второй эксперимент сохранён (новый JSON: {new})")
-    s.files_before["json"] |= new
+    new = list_files(s.session_dir) - s.files_before
+    check(len(new) == 1, f"второй эксперимент сохранён (новый .vag: {new})")
+    s.files_before |= new
 
 
 def step_set_params_emergency(s: Smoke) -> None:
@@ -352,9 +419,9 @@ def step_after_emergency(s: Smoke) -> None:
           f"авария i_max: причина показана в GUI ({s.cw.status_label.text()!r})")
     check(s.c.state == "idle", "авария i_max: контроллер вернулся в idle")
     check(not s.k.outputA, "авария i_max: output=0")
-    new = list_files("json") - s.files_before["json"]
-    check(len(new) == 1, f"авария i_max: данные сохранены (новый JSON: {new})")
-    s.files_before["json"] |= new
+    new = list_files(s.session_dir) - s.files_before
+    check(len(new) == 1, f"авария i_max: данные сохранены (новый .vag: {new})")
+    s.files_before |= new
 
 
 def main() -> int:
@@ -371,7 +438,9 @@ def main() -> int:
 
     s = Smoke(app, window, controller, k2636b, ps)
     s.then(0, step_wait_init) \
-        .then(100, step_set_params_full) \
+        .then(100, step_config_startup) \
+        .then(0, step_exercise_defaults) \
+        .then(0, step_set_params_full) \
         .then(0, step_exercise_scale_and_channel) \
         .then(0, step_exercise_theme) \
         .then(0, step_start) \
@@ -383,6 +452,7 @@ def main() -> int:
         .then(600, step_resumed) \
         .then(0, step_stop) \
         .then(600, step_after_stop) \
+        .then(0, step_exercise_history) \
         .then(100, step_set_params_mid) \
         .then(0, step_start_mid) \
         .then(130, step_stop_mid) \

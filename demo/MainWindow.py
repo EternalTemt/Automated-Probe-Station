@@ -19,7 +19,8 @@ class MainWindow(QMainWindow):
     shutdownRequested = Signal()
     themeChanged = Signal(str)
 
-    def __init__(self, graph, controller_widget, actual_iv, ps_widget, deviceThread, parent=None):
+    def __init__(self, graph, controller_widget, actual_iv, ps_widget, history,
+                 deviceThread, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Автоматизированная зондовая станция — ВАХ")
         self._deviceThread = deviceThread
@@ -41,8 +42,8 @@ class MainWindow(QMainWindow):
         column_layout.addWidget(self._boxed("Параметры измерения", controller_widget))
         column_layout.addWidget(self._boxed("Текущие значения", actual_iv))
         column_layout.addWidget(self._boxed("Контакты зондовой станции", ps_widget))
+        column_layout.addWidget(self._boxed("История измерений", history), stretch=1)
         column_layout.addWidget(self._boxed("Оформление", theme_row))
-        column_layout.addStretch(1)
         column.setMinimumWidth(280)
 
         graph.setMinimumSize(500, 400)

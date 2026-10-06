@@ -1,3 +1,4 @@
+import json
 import sys
 
 from PySide6.QtCore import Qt, QThread, QTimer
@@ -7,11 +8,13 @@ import theme
 from K2636B import K2636B
 from PS import PS
 from MainWindow import MainWindow
-from actual_IV import ActualIV
+from K2636B_widget import ActualIV
 from controller import Controller
 from controller_widget import ControllerWidget
-from graph import Graph
-from ps_widget import PSWidget
+from graph_widget import Graph
+from history_widget import History
+from PS_widget import PSWidget
+from session import Session
 
 QC = Qt.ConnectionType.QueuedConnection
 
@@ -36,12 +39,18 @@ def build_application() -> tuple:
 
     graph = Graph()
     ps_widget = PSWidget()
-    controller_widget = ControllerWidget(ps_widget=ps_widget)
+    session = Session()
+    session.start_run()
+    controller_widget = ControllerWidget(ps_widget=ps_widget, session=session)
     actual_iv = ActualIV()
-    window = MainWindow(graph, controller_widget, actual_iv, ps_widget, deviceThread)
+    history = History(session=session)
+    window = MainWindow(graph, controller_widget, actual_iv, ps_widget, history,
+                        deviceThread)
 
-    wire(app, controller, k2636b, ps, window, graph,
+    wire(app, controller, k2636b, ps, window, graph, history,
          controller_widget, actual_iv, ps_widget, deviceThread)
+
+    controller_widget.load_default()
 
     deviceThread.finished.connect(controller.deleteLater)
     deviceThread.finished.connect(k2636b.deleteLater)
@@ -54,7 +63,7 @@ def build_application() -> tuple:
     return app, window, controller, k2636b, ps, deviceThread
 
 
-def wire(app, controller, k2636b, ps, window, graph,
+def wire(app, controller, k2636b, ps, window, graph, history,
          controller_widget, actual_iv, ps_widget, deviceThread) -> None:
     """Все connect() приложения — в одном месте."""
     controller_widget.sig_start.connect(controller.start, QC)
@@ -71,10 +80,26 @@ def wire(app, controller, k2636b, ps, window, graph,
     controller.pointUpdated.connect(graph.add_point, QC)
     controller.progressUpdated.connect(controller_widget.progress_bar.setValue, QC)
     controller.startDone.connect(graph.clear, QC)
-    controller.stopDone.connect(graph.on_experiment_finished, QC)
     controller.startDone.connect(actual_iv.lock, QC)
     controller.stopDone.connect(actual_iv.unlock, QC)
     controller.startFailed.connect(actual_iv.unlock, QC)
+
+    controller.stopDone.connect(history.add_file, QC)
+
+    def on_curve_toggled(path: str, on: bool, color) -> None:
+        """Галочка истории: построить кривую из .vag или снять её с графика."""
+        if not on:
+            graph.remove_history_curve(path)
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+            graph.add_history_curve(path, d["u"], d["i"], color)
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as e:
+            print(f"# main: не удалось прочитать {path}: {e}")
+            history.mark_error(path)
+
+    history.curveToggled.connect(on_curve_toggled)
 
     k2636b.newIV_A.connect(actual_iv.on_iv_A, QC)
     k2636b.newIV_B.connect(actual_iv.on_iv_B, QC)

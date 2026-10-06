@@ -14,8 +14,8 @@ install: ## Создать .asp_env и поставить зависимости
 run: ## Запустить GUI (demo/main.py)
 	$(PY) demo/main.py
 
-test: ## Headless-проверка всего сценария без железа и дисплея (81 проверка)
+test: ## Headless-проверка всего сценария без железа и дисплея (101 проверка)
 	QT_QPA_PLATFORM=offscreen $(PY) -u demo/smoke_check.py
 
 clean-data: ## Очистить demo/data/ от результатов прогонов
-	rm -rf demo/data/json demo/data/csv demo/data/graphs
+	rm -rf demo/data/*

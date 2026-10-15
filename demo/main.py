@@ -18,7 +18,6 @@ from session import Session
 
 QC = Qt.ConnectionType.QueuedConnection
 
-
 def build_application() -> tuple:
     """Создать приложение, потоки, объекты и окно, не запуская цикл событий."""
     app = QApplication(sys.argv)

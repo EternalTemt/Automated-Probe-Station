@@ -47,8 +47,8 @@ QObject-координатор не нужен.
 | idle → measurements | `ControllerWidget.sig_start` | валидация параметров → `PS.set_contacts(a, b)` (только `True` пропускает, иначе `startFailed`) → `K2636B.set_i_max_*` → `set_output_*=1` (с перепроверкой `get_output_*`) → построение плана 0→V2→V1→0 → `startDone` → цикл точек |
 | measurements → waiting | `sig_pause` | отмена запланированных точек (поколение `_token`), `set_output_*=0` → `pauseDone` |
 | waiting → measurements | `sig_resume` | `set_output_*=1`, возврат напряжения точки `_idx-1`, выдержка delay (`QTimer.singleShot`), продолжение цикла → `resumeDone` |
-| measurements/waiting → idle | `sig_stop` (кнопка stop) **или** естественный конец плана | `set_output_*=0`, V=0, сохранение .vag, `stopDone(vag_path)`; при естественном конце дополнительно `finished` |
-| measurements → idle (авария i_max) | измеренный `|I| >= i_max` (проверка в `_measure_point`) | те же действия, что по stop (output=0, V=0, сохранение данных) + `startFailed(причина)` — GUI показывает «Экстренная остановка: |I| достиг i_max» |
+| measurements/waiting → idle | `sig_stop` (кнопка stop) **или** естественный конец плана | `set_output_*=0`, V=0, сохранение .vac, `stopDone(vac_path)`; при естественном конце дополнительно `finished` |
+| measurements → idle (авария i_max) | измеренный `|I| >= i_max` (проверка в `_measure_point`) | те же действия, что по stop (output=0, V=0, сохранение данных) + `startFailed(причина)` — GUI показывает «Экстренная остановка: \|I\| достиг i_max» |
 | measurements/waiting → idle (авария прибора) | `K2636B.connectionLost` / `K2636B.error` | попытка `output=0`, `startFailed(причина)` |
 
 Цикл развёртки событийный: одна точка = `set_voltage` → выдержка delay через
@@ -67,7 +67,7 @@ QObject-координатор не нужен.
 
 | Сигнал | Слот | Аргументы / смысл |
 |---|---|---|
-| `ControllerWidget.sig_start` | `Controller.start` | `dict`: sample, V1, V2, Vs, dt, chipType, i_max, scale, contactA, contactB, session_dir, limits |
+| `ControllerWidget.sig_start` | `Controller.start` | `dict`: sample, V1, V2, Vs, dt, chipType, i_max, scale, contactA, contactB, session_dir (папка образца, создаётся при start), limits |
 | `ControllerWidget.sig_pause` | `Controller.pause` | пауза (output=0) |
 | `ControllerWidget.sig_resume` | `Controller.resume` | продолжение (output=1, возврат V, выдержка delay) |
 | `ControllerWidget.sig_stop` | `Controller.stop` | останов + сохранение (кнопка stop) |
@@ -75,15 +75,19 @@ QObject-координатор не нужен.
 | `MainWindow.shutdownRequested` | `Controller.shutdown` | завершение программы (см. порядок выше) |
 | (внутренний) `Controller.sig_next_point` | `Controller.next_point` | самоперепланировка цикла (QueuedConnection) |
 
+Доступность кнопок (ControllerWidget): в idle `start` неактивен, пока поле
+«Образец» пустое; `stop` неактивен в idle и активен в measurements и
+waiting (досрочное завершение, в т.ч. с паузы).
+
 ## Контроллер → GUI (статус и данные, QueuedConnection)
 
 | Сигнал | Слот(ы) | Смысл |
 |---|---|---|
-| `Controller.startDone` | `ControllerWidget.on_started`, `Graph.clear`, `ActualIV.lock` | измерение запущено: блокировать поля и выбор канала, кнопка → «pause», график чистится |
+| `Controller.startDone` | `ControllerWidget.on_started`, `Graph.clear`, `ActualIV.lock` | измерение запущено: блокировать поля и выбор канала, кнопка → «pause», график чистится, watcher session — на local_config образца |
 | `Controller.startFailed(str)` | `ControllerWidget.on_start_failed`, `ActualIV.unlock` | старт отклонён (валидация/коммутация/output) или вынужденный переход в idle (авария i_max, потеря связи, ошибка прибора): причина в status_label, остаться в idle |
 | `Controller.pauseDone` | `ControllerWidget.on_paused` | кнопка → «resume» |
 | `Controller.resumeDone` | `ControllerWidget.on_resumed` | кнопка → «pause» |
-| `Controller.stopDone(str)` | `ControllerWidget.on_stopped`, `History.add_file`, `ActualIV.unlock` | остановлено; str — путь к .vag ("" при ошибке сохранения). Файл появляется первым в блоке активного запуска истории; выбор канала разблокируется |
+| `Controller.stopDone(str)` | `ControllerWidget.on_stopped`, `History.on_measurement_saved`, `Graph.clear`, `ActualIV.unlock` | остановлено; str — путь к .vac ("" при ошибке сохранения). Живая кривая очищается; файл появляется первым в блоке истории **с прожатой галочкой** — измерение сразу показывается из файла; выбор канала разблокируется |
 | `Controller.pointUpdated(u, i)` | `Graph.add_point` | точка развёртки на график I(U) |
 | `Controller.progressUpdated(int)` | `ControllerWidget.progress_bar.setValue` | процент выполнения развёртки (измерено точек / всего в плане — при постоянном темпе Δt это доля затраченного времени); 0 на старте и при stop, 100 при естественном конце |
 | `Controller.finished` | (подписка опциональна, слушает smoke_check) | естественный конец развёртки (после `stopDone`) |
@@ -96,16 +100,20 @@ QObject-координатор не нужен.
 | `ControllerWidget.chipTypeChanged(str)` | `PSWidget.set_chip_type` | тип чипа OP2/MD2 → диапазон контактов 1..13 / 1..15, ячейки доступны |
 | `ControllerWidget.scaleChanged(bool)` | `Graph.set_log_scale` | True = логарифмическая шкала тока (вид оси, `setLogMode`; не пересчёт значений) |
 | `MainWindow.themeChanged(str)` | apply_theme (замыкание в `wire()`) | применить тему: `app.setStyleSheet(theme.qss(name))` + `graph.apply_theme(theme.graph_colors(name))` |
-| `History.curveToggled(str, bool, QColor)` | on_curve_toggled (замыкание в `wire()`) | галочка файла: прочитать .vag и `Graph.add_history_curve(path, u, i, color)` / снять — `Graph.remove_history_curve(path)`; битый файл → `History.mark_error(path)` |
+| `History.curveToggled(str, bool, QColor)` | on_curve_toggled (замыкание в `wire()`) | галочка файла: прочитать .vac и `Graph.add_history_curve(path, u, i, color)` / снять — `Graph.remove_history_curve(path)`; битый файл → `History.mark_error(path)` |
+| `History.primaryChanged(str)` | on_primary_changed (замыкание в `wire()`) | «Сделать основной»: `Session.set_active_config` на local_config.json этой папки (если есть) |
+| `History.workdirChanged(str)` | on_workdir_changed (замыкание в `wire()`) | «Рабочая папка…»: `Session.set_workdir(dir)` + запомнить в QSettings |
+| `Session.configChanged(dict)` | `ControllerWidget.apply_config_safe` | активный конфиг изменён на диске (QFileSystemWatcher): применить к полям в idle, во время измерения — отложить до stop |
 | `ActualIV.channelChanged(str)` | см. также таблицу GUI → контроллер | виджет сам переключает отображаемый канал |
 
 Прямые вызовы внутри GUI-потока (не сигналы, разрешено — запрет касается
 только межпоточных вызовов): `ControllerWidget._collect_params()` →
-`PSWidget.get_contacts()` при сборке dict старта; кнопки Set/Load default →
-`Session.write_values()` / `Session.read_config()`; `load_default()` →
-`PSWidget.set_contacts(a, b)`. При старте `build_application()` вызывает
-`Session.start_run()` (папка запуска + config.json) и
-`ControllerWidget.load_default()` (поля и лимиты из конфига в GUI).
+`PSWidget.get_contacts()` и `Session.sample_dir(sample)` при сборке dict
+старта (папка образца создаётся здесь); `apply_config()` →
+`PSWidget.set_contacts(a, b)`; смена имени образца →
+`Session.set_active_config(local_config, если есть)`. При старте
+`build_application()` вызывает `ControllerWidget._init_from_config()`
+(поля и лимиты из активного конфига в GUI).
 
 ## Контроллер → драйверы (worker-поток, прямые вызовы)
 
@@ -137,37 +145,47 @@ QObject-координатор не нужен.
 
 ## Сохранение данных (только Controller)
 
-- При каждом запуске приложения `Session.start_run()` создаёт папку
-  `demo/data/<YYYY-MM-DD_HH-MM-SS>/` со свежим `config.json` (секции
-  `values` — рабочие значения полей GUI, обмен кнопками Set/Load default;
-  `limits` — жёсткие границы полей, правятся только из консоли). Папки
-  прошлых запусков не стираются; `demo/data/` в `.gitignore`.
-- Результат измерения — файл `.vag` (JSON внутри) в папке запуска; имя
-  `HH-MM-SS_<образец>_A<NN>_B<NN>.vag` (контакт — две цифры с ведущим
-  нулём: `A03_B04`; дата — в имени папки). При коллизии в пределах одной
-  секунды — суффикс `_1`, `_2`, …
-- Содержимое .vag: `params` (sample, chipType, V1, V2, Vs, dt, i_max,
+- Рабочая папка запуска (ТЗ «Данные и сохранение»): аргумент `-d`
+  (`make run d=<имя>` — подпапка `demo/data/<имя>/`, абсолютный путь — как
+  есть) → последняя выбранная в GUI (QSettings) → `demo/data/`
+  (`DEFAULT_WORKDIR` в session.py, в `.gitignore`).
+- В рабочей папке — `config.json` (скелет параметров) и папки образцов
+  `<workdir>/<sample>/`, создаваемые при нажатии start. В папке образца —
+  `local_config.json` (копия config.json при первом старте этого образца)
+  и результаты измерений. Поля `sample` в конфигах нет.
+- Результат измерения — файл `.vac` (JSON внутри) в папке образца; имя
+  `YYYY-MM-DD_HH-MM-SS_<образец>_A<NN>_B<NN>.vac` (контакт — две цифры с
+  ведущим нулём: `A03_B04`). При коллизии в пределах одной секунды —
+  суффикс `_1`, `_2`, …
+- Содержимое .vac: `params` (sample, chipType, V1, V2, Vs, dt, i_max,
   channel, contactA, contactB), массивы `u`, `i`, `saved_at`. Ключ
   `i_max` — с замены термина compliance; файлы, сохранённые до переименования,
-  по этому ключу несовместимы.
+  по этому ключу несовместимы. (Расширение `.vag` упразднено в пользу `.vac`.)
 - CSV и PNG не создаются (упразднены).
 
 ## Проверка
 
-`demo/smoke_check.py` — программный headless-прогон (101 проверка):
-инициализация → папка запуска и config.json при старте, поля/лимиты GUI из
-конфига → кнопки Set/Load default (запись values, сохранение limits,
-roundtrip, лимиты из консоли) → межвиджетные связи (масштаб, канал) →
-тема/шрифт/рамки → старт (TEST1, MD2, ±1 В, Vs=0.2, Δt=0.01, i_max=0.07) →
-точки (лин/лог и тема доступны по ходу измерения, канал и load/set default
-заблокированы, прогресс идёт) → pause (замерло, output=0) → resume
-(продолжилось) → stop → .vag по шаблону имени и содержимое → история (файл
-в списке первым в блоке, галочка строит кривую, clear живой кривой историю
-не трогает, битый .vag помечается «(ошибка)», удаление с диска снимает
-кривую) → ручной stop посреди развёртки (TEST2, finished не эмитится, темп
-delay соблюдён) → естественный конец (TEST3, finished, idle, прогресс 100%)
-→ авария i_max (TEST4, i_max=1 нА: экстренная остановка, данные сохранены,
-причина в GUI) → shutdown по ТЗ. Запуск:
+`demo/smoke_check.py` — программный headless-прогон (122 проверки) во
+временной рабочей папке (`tempfile`, `demo/data/` не засоряется):
+инициализация → config.json в рабочей папке, поля/лимиты GUI из конфига,
+папки образцов до start не создаются, start/stop погашены в idle →
+watcher: правка config.json из консоли подтягивается в GUI → шаг стрелок
+V1/V2 следует за Vs → межвиджетные связи (масштаб, канал) → тема/шрифт/рамки
+→ старт (TEST1, MD2, ±1 В, Vs=0.2, Δt=0.08, i_max=0.07): папка образца и
+local_config.json созданы → точки (stop активен и в measurements, и на
+паузе; правка local_config во время измерения откладывается) → pause →
+resume → stop → .vac по шаблону имени с датой, живая кривая очищена,
+отложенный конфиг применён → история (файл с авто-галочкой, кривая из
+файла, ленивое раскрытие папок, поиск-фильтр, «Сделать основной»,
+«Удалить из Истории» без удаления с диска, «Открыть в проводнике»
+(вызов с подменой, без реального окна), битый .vac помечается
+«(ошибка)», «Удалить с устройства» снимает кривую) → смена рабочей папки
+(session переключается, config.json создаётся, дерево перестраивается) →
+ручной stop посреди развёртки (TEST2, finished не эмитится, темп delay
+соблюдён) → естественный конец (TEST3, finished, idle, прогресс 100%) →
+авария i_max (TEST4, i_max=1 нА: экстренная остановка, данные сохранены,
+причина в GUI) → повторный start с тем же образцом (файлы добавляются в
+ту же папку) → shutdown по ТЗ. Запуск:
 
 ```bash
 QT_QPA_PLATFORM=offscreen .asp_env/bin/python demo/smoke_check.py

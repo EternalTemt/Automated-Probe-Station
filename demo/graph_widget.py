@@ -36,7 +36,7 @@ class Graph(QWidget):
         self._history_curves: dict[str, object] = {}
 
     def add_history_curve(self, name: str, u: list, i: list, color) -> None:
-        """Кривая из истории (.vag): именованная, переживает clear() живой кривой."""
+        """Кривая из истории (.vac): именованная, переживает clear() живой кривой."""
         self.remove_history_curve(name)
         self._history_curves[name] = self.plot_widget.plot(
             list(u), list(i),

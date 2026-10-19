@@ -42,8 +42,8 @@ class MainWindow(QMainWindow):
         column_layout.addWidget(self._boxed("Параметры измерения", controller_widget))
         column_layout.addWidget(self._boxed("Текущие значения", actual_iv))
         column_layout.addWidget(self._boxed("Контакты зондовой станции", ps_widget))
-        column_layout.addWidget(self._boxed("История измерений", history), stretch=1)
         column_layout.addWidget(self._boxed("Оформление", theme_row))
+        column_layout.addWidget(self._boxed("История измерений", history), stretch=1)
         column.setMinimumWidth(280)
 
         graph.setMinimumSize(500, 400)

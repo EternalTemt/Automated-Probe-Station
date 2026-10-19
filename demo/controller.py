@@ -238,16 +238,16 @@ class Controller(QObject):
         self._halt(save=True, natural=True)
 
     def _save(self) -> str:
-        """Сохранить .vag (JSON: params + u/i) в папку запуска, вернуть путь."""
+        """Сохранить .vac (JSON: params + u/i) в папку образца, вернуть путь."""
         session_dir = self._params["session_dir"]
-        base = (f"{datetime.now():%H-%M-%S}_{self._params['sample']}"
+        base = (f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{self._params['sample']}"
                 f"_A{self._params['contactA']:02d}_B{self._params['contactB']:02d}")
 
-        vag_path = os.path.join(session_dir, base + ".vag")
+        vac_path = os.path.join(session_dir, base + ".vac")
         n = 0
-        while os.path.exists(vag_path):
+        while os.path.exists(vac_path):
             n += 1
-            vag_path = os.path.join(session_dir, f"{base}_{n}.vag")
+            vac_path = os.path.join(session_dir, f"{base}_{n}.vac")
 
         data = {
             "params": {
@@ -266,10 +266,10 @@ class Controller(QObject):
             "i": list(self._i),
             "saved_at": datetime.now().isoformat(timespec="seconds"),
         }
-        with open(vag_path, "w", encoding="utf-8") as f:
+        with open(vac_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-        return vag_path
+        return vac_path
 
     @staticmethod
     def _validate(params: dict) -> str | None:

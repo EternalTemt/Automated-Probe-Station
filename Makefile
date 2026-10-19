@@ -11,10 +11,10 @@ install: ## Создать .asp_env и поставить зависимости
 	if [ ! -d .asp_env ]; then python3 -m venv .asp_env; fi
 	$(PY) -m pip install -r requirements.txt
 
-run: ## Запустить GUI (demo/main.py)
-	$(PY) demo/main.py
+run: ## Запустить GUI; make run d=<имя|путь> — рабочая папка (имя — под demo/data/)
+	$(PY) demo/main.py $(if $(d),-d "$(d)",)
 
-test: ## Headless-проверка всего сценария без железа и дисплея (101 проверка)
+test: ## Headless-проверка всего сценария без железа и дисплея (122 проверки)
 	QT_QPA_PLATFORM=offscreen $(PY) -u demo/smoke_check.py
 
 clean-data: ## Очистить demo/data/ от результатов прогонов

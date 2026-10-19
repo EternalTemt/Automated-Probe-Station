@@ -20,7 +20,13 @@ I_MAX_MIN, I_MAX_MAX = 1e-9, 0.1
 
 
 class ControllerWidget(QWidget):
-    """Поля параметров измерения + кнопки start/pause/resume и stop."""
+    """Поля параметров измерения + кнопки start/pause/resume и stop.
+
+    Значения и лимиты полей задаются активным конфигом (config.json рабочей
+    папки или local_config.json образца): подтягиваются при старте, по
+    сигналу session.configChanged (правки файла из консоли) и при выборе
+    образца с существующим local_config. Из GUI в JSON не пишется ничего.
+    """
 
     sig_start = Signal(dict)
     sig_pause = Signal()
@@ -31,11 +37,12 @@ class ControllerWidget(QWidget):
     scaleChanged = Signal(bool)
 
     def __init__(self, ps_widget=None, session=None, parent=None):
-        """Создать поля ввода и кнопки; ps_widget даёт контакты, session — папку запуска и лимиты."""
+        """Создать поля ввода и кнопки; ps_widget даёт контакты, session — конфиги."""
         super().__init__(parent)
         self._ps_widget = ps_widget
         self._session = session
         self._state = "idle"
+        self._pending_config: dict | None = None
 
         layout = QVBoxLayout(self)
 
@@ -47,12 +54,12 @@ class ControllerWidget(QWidget):
         self.sample_edit.setValidator(
             QRegularExpressionValidator(QRegularExpression("^[A-Za-z0-9._-]{0,15}$"))
         )
+        self.sample_edit.textChanged.connect(self._on_sample_changed)
         form.addRow("Образец", self.sample_edit)
 
         self.v1_spin = QDoubleSpinBox()
         self.v1_spin.setRange(V1_MIN, V1_MAX)
         self.v1_spin.setDecimals(3)
-        self.v1_spin.setSingleStep(0.1)
         self.v1_spin.setSuffix(" В")
         self.v1_spin.setValue(-1.000)
         form.addRow("V1 (начало)", self.v1_spin)
@@ -60,7 +67,6 @@ class ControllerWidget(QWidget):
         self.v2_spin = QDoubleSpinBox()
         self.v2_spin.setRange(V2_MIN, V2_MAX)
         self.v2_spin.setDecimals(3)
-        self.v2_spin.setSingleStep(0.1)
         self.v2_spin.setSuffix(" В")
         self.v2_spin.setValue(1.000)
         form.addRow("V2 (конец)", self.v2_spin)
@@ -71,7 +77,9 @@ class ControllerWidget(QWidget):
         self.vs_spin.setSingleStep(0.05)
         self.vs_spin.setSuffix(" В")
         self.vs_spin.setValue(0.1)
+        self.vs_spin.valueChanged.connect(self._on_vs_changed)
         form.addRow("Шаг Vs", self.vs_spin)
+        self._on_vs_changed(self.vs_spin.value())
 
         self.dt_spin = QDoubleSpinBox()
         self.dt_spin.setRange(0.0, 60.0)
@@ -136,19 +144,12 @@ class ControllerWidget(QWidget):
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
         layout.addLayout(buttons)
-
-        default_buttons = QHBoxLayout()
-        self.load_default_button = QPushButton("Load default")
-        self.set_default_button = QPushButton("Set default")
-        self.load_default_button.clicked.connect(self.load_default)
-        self.set_default_button.clicked.connect(self.set_default)
-        default_buttons.addWidget(self.load_default_button)
-        default_buttons.addWidget(self.set_default_button)
-        layout.addLayout(default_buttons)
         layout.addStretch(1)
 
+        self._update_buttons()
+
     def _collect_values(self) -> dict | None:
-        """Собрать и провалидировать рабочие значения полей (секция values конфига)."""
+        """Собрать и провалидировать рабочие значения полей."""
         sample = self.sample_edit.text()
         if not sample or not sample.strip("."):
             self._show_error("Введите номер образца (латиница, цифры, . _ -; до 15 символов).")
@@ -179,30 +180,35 @@ class ControllerWidget(QWidget):
         return values
 
     def _collect_params(self) -> dict | None:
-        """Собрать dict параметров для sig_start: values + папка запуска и лимиты."""
+        """Собрать dict параметров для sig_start: values + папка образца и лимиты.
+
+        Папка образца (<workdir>/<sample>/) создаётся здесь — при нажатии start.
+        """
         params = self._collect_values()
         if params is None:
             return None
-        if self._session is not None and self._session.dir:
-            params["session_dir"] = self._session.dir
+        if self._session is not None:
+            params["session_dir"] = self._session.sample_dir(params["sample"])
             params["limits"] = self._session.read_config()["limits"]
         return params
 
-    def set_default(self) -> None:
-        """Кнопка «Set default»: выгрузить поля GUI в config.json (лимиты сохраняются)."""
-        values = self._collect_values()
-        if values is not None and self._session is not None:
-            self._session.write_values(values)
-            self._clear_error()
-
-    def load_default(self) -> None:
-        """Кнопка «Load default»: подгрузить values и limits из config.json в GUI."""
+    def _init_from_config(self) -> None:
+        """Применить активный конфиг при запуске приложения."""
         if self._session is not None:
             self.apply_config(self._session.read_config())
-            self._clear_error()
+
+    def apply_config_safe(self, cfg: dict) -> None:
+        """Слот для session.configChanged: применить в idle, иначе — после stop."""
+        if self._state == "idle":
+            self.apply_config(cfg)
+        else:
+            self._pending_config = cfg
 
     def apply_config(self, cfg: dict) -> None:
-        """Применить конфиг: limits — в диапазоны спинбоксов, values — в поля."""
+        """Применить конфиг: limits — в диапазоны спинбоксов, values — в поля.
+
+        Поле «Образец» конфигом не управляется (sample в конфигах нет).
+        """
         limits, values = cfg["limits"], cfg["values"]
         self.v1_spin.setRange(limits["V_min"], -0.001)
         self.v2_spin.setRange(0.001, limits["V_max"])
@@ -210,7 +216,6 @@ class ControllerWidget(QWidget):
         self.dt_spin.setRange(limits["dt_min"], limits["dt_max"])
         self.i_max_spin.setRange(1e-9, limits["i_max_limit"])
 
-        self.sample_edit.setText(str(values["sample"]))
         self.v1_spin.setValue(float(values["V1"]))
         self.v2_spin.setValue(float(values["V2"]))
         self.vs_spin.setValue(float(values["Vs"]))
@@ -251,32 +256,65 @@ class ControllerWidget(QWidget):
     def _on_scale_clicked(self, button) -> None:
         self.scaleChanged.emit(button.text() == "лог")
 
+    def _on_vs_changed(self, vs: float) -> None:
+        """Шаг стрелок V1/V2 равен Vs: изменения кратны шагу развёртки."""
+        self.v1_spin.setSingleStep(vs)
+        self.v2_spin.setSingleStep(vs)
+
+    def _on_sample_changed(self, sample: str) -> None:
+        """Смена образца: доступность start + local_config образца, если он есть."""
+        self._update_buttons()
+        if self._state != "idle" or self._session is None:
+            return
+        local = self._session.local_config_path(sample) if sample else None
+        self._session.set_active_config(local)
+        if local is not None:
+            self.apply_config(self._session.read_config(local))
+
     def on_started(self) -> None:
-        """Измерение запущено: заблокировать все поля ввода."""
+        """Измерение запущено: заблокировать поля, watcher — на local_config образца."""
         self._state = "started"
         self.start_button.setText("pause")
         self._set_inputs_enabled(False)
+        self._update_buttons()
+        if self._session is not None:
+            local = self._session.local_config_path(self.sample_edit.text())
+            if local is not None:
+                self._session.set_active_config(local)
 
     def on_paused(self) -> None:
         self._state = "paused"
         self.start_button.setText("resume")
+        self._update_buttons()
 
     def on_resumed(self) -> None:
         self._state = "started"
         self.start_button.setText("pause")
+        self._update_buttons()
 
     def on_stopped(self) -> None:
         """Измерение остановлено: разблокировать поля, вернуть кнопку в «start»."""
         self._state = "idle"
         self.start_button.setText("start")
         self._set_inputs_enabled(True)
+        self._update_buttons()
+        if self._pending_config is not None:
+            cfg, self._pending_config = self._pending_config, None
+            self.apply_config(cfg)
 
     def on_start_failed(self, reason: str) -> None:
         """Старт отклонён (контроллер): показать причину, остаться в idle."""
         self._state = "idle"
         self.start_button.setText("start")
         self._set_inputs_enabled(True)
+        self._update_buttons()
         self._show_error(reason)
+
+    def _update_buttons(self) -> None:
+        """start неактивен без имени образца; stop — только вне idle."""
+        self.start_button.setEnabled(
+            self._state != "idle" or bool(self.sample_edit.text()))
+        self.stop_button.setEnabled(self._state != "idle")
 
     def _set_inputs_enabled(self, enabled: bool) -> None:
         """Блокировка/разблокировка всех полей ввода."""
@@ -289,8 +327,6 @@ class ControllerWidget(QWidget):
             self.i_max_spin,
             self.radio_op2,
             self.radio_md2,
-            self.load_default_button,
-            self.set_default_button,
         ):
             w.setEnabled(enabled)
         if self._ps_widget is not None:

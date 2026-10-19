@@ -1,7 +1,9 @@
+import argparse
 import json
+import os
 import sys
 
-from PySide6.QtCore import Qt, QThread, QTimer
+from PySide6.QtCore import QSettings, Qt, QThread, QTimer
 from PySide6.QtWidgets import QApplication
 
 import theme
@@ -14,17 +16,43 @@ from controller_widget import ControllerWidget
 from graph_widget import Graph
 from history_widget import History
 from PS_widget import PSWidget
-from session import Session
+from session import DEFAULT_WORKDIR, LOCAL_CONFIG_NAME, Session
 
 QC = Qt.ConnectionType.QueuedConnection
 
-def build_application() -> tuple:
-    """Создать приложение, потоки, объекты и окно, не запуская цикл событий."""
+
+def resolve_workdir() -> str:
+    """Рабочая папка: -d (имя — под demo/data/, абсолютный путь — как есть),
+    иначе последняя выбранная в GUI (QSettings), иначе demo/data/."""
+    parser = argparse.ArgumentParser(description="Автоматизированная зондовая станция")
+    parser.add_argument("-d", "--directory", default=None,
+                        help="рабочая папка: короткое имя (под demo/data/) или абсолютный путь")
+    args, _ = parser.parse_known_args()
+    if args.directory:
+        if os.path.isabs(args.directory):
+            return args.directory
+        return os.path.join(DEFAULT_WORKDIR, args.directory)
+    saved = QSettings().value("workdir", type=str)
+    if saved and os.path.isdir(saved):
+        return saved
+    return DEFAULT_WORKDIR
+
+
+def build_application(workdir: str | None = None) -> tuple:
+    """Создать приложение, потоки, объекты и окно, не запуская цикл событий.
+
+    workdir=None — разрешить по правилам resolve_workdir(); в тестах папка
+    передаётся явно (argparse и QSettings обходятся).
+    """
     app = QApplication(sys.argv)
     app.setApplicationName("Automated Probe Station")
+    app.setOrganizationName("Automated Probe Station")
     font = app.font()
     font.setPointSize(12)
     app.setFont(font)
+
+    if workdir is None:
+        workdir = resolve_workdir()
 
     deviceThread = QThread()
     deviceThread.setObjectName("deviceThread")
@@ -38,18 +66,17 @@ def build_application() -> tuple:
 
     graph = Graph()
     ps_widget = PSWidget()
-    session = Session()
-    session.start_run()
+    session = Session(workdir)
     controller_widget = ControllerWidget(ps_widget=ps_widget, session=session)
     actual_iv = ActualIV()
-    history = History(session=session)
+    history = History(workdir=session.workdir)
     window = MainWindow(graph, controller_widget, actual_iv, ps_widget, history,
                         deviceThread)
 
     wire(app, controller, k2636b, ps, window, graph, history,
-         controller_widget, actual_iv, ps_widget, deviceThread)
+         controller_widget, actual_iv, ps_widget, session, deviceThread)
 
-    controller_widget.load_default()
+    controller_widget._init_from_config()
 
     deviceThread.finished.connect(controller.deleteLater)
     deviceThread.finished.connect(k2636b.deleteLater)
@@ -63,7 +90,7 @@ def build_application() -> tuple:
 
 
 def wire(app, controller, k2636b, ps, window, graph, history,
-         controller_widget, actual_iv, ps_widget, deviceThread) -> None:
+         controller_widget, actual_iv, ps_widget, session, deviceThread) -> None:
     """Все connect() приложения — в одном месте."""
     controller_widget.sig_start.connect(controller.start, QC)
     controller_widget.sig_pause.connect(controller.pause, QC)
@@ -83,10 +110,13 @@ def wire(app, controller, k2636b, ps, window, graph, history,
     controller.stopDone.connect(actual_iv.unlock, QC)
     controller.startFailed.connect(actual_iv.unlock, QC)
 
-    controller.stopDone.connect(history.add_file, QC)
+    # После остановки: живая кривая очищается, измерение сразу показывается
+    # из сохранённого файла (в истории прожимается галочка).
+    controller.stopDone.connect(history.on_measurement_saved, QC)
+    controller.stopDone.connect(graph.clear, QC)
 
     def on_curve_toggled(path: str, on: bool, color) -> None:
-        """Галочка истории: построить кривую из .vag или снять её с графика."""
+        """Галочка истории: построить кривую из .vac или снять её с графика."""
         if not on:
             graph.remove_history_curve(path)
             return
@@ -99,6 +129,22 @@ def wire(app, controller, k2636b, ps, window, graph, history,
             history.mark_error(path)
 
     history.curveToggled.connect(on_curve_toggled)
+
+    def on_primary_changed(dir_path: str) -> None:
+        """«Сделать основной»: watcher — на local_config этой папки, если он есть."""
+        local = os.path.join(dir_path, LOCAL_CONFIG_NAME)
+        session.set_active_config(local if os.path.exists(local) else None)
+
+    history.primaryChanged.connect(on_primary_changed)
+
+    def on_workdir_changed(dir_path: str) -> None:
+        """Смена рабочей папки из GUI: session + запомнить в QSettings."""
+        session.set_workdir(dir_path)
+        QSettings().setValue("workdir", dir_path)
+
+    history.workdirChanged.connect(on_workdir_changed)
+
+    session.configChanged.connect(controller_widget.apply_config_safe)
 
     k2636b.newIV_A.connect(actual_iv.on_iv_A, QC)
     k2636b.newIV_B.connect(actual_iv.on_iv_B, QC)
